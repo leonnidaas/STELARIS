@@ -1,0 +1,28 @@
+# Core numerics / data
+numpy>=1.24
+pandas>=2.0
+scikit-learn>=1.3
+joblib>=1.3
+
+# Model training
+xgboost>=2.0
+optuna>=3.6
+# TensorFlow GPU (installe les libs CUDA/cuDNN via pip)
+tensorflow[and-cuda]>=2.16
+keras>=3.0
+# PyTorch stack (installer la roue CUDA, voir commande plus bas)
+torch>=2.2
+torchvision>=0.17
+torchaudio>=2.2
+
+# GPU monitoring / diagnostics
+nvidia-ml-py>=11.5
+
+# Plotting / reporting
+matplotlib>=3.8
+tqdm>=4.66
+
+# Project runtime deps used by utils.py
+python-dotenv>=1.0
+PyYAML>=6.0
+pyproj>=3.6

@@ -1,0 +1,2 @@
+Projet : STELARIS (Satellite Trakingjectory, Environment LiDAR Recognition & AI on Signal)
+Solution logicielle modulaire dédiée à la fusion sensorielle et à la labélisation automatique de données LiDAR HD pour l'infrastructure ferroviaire.

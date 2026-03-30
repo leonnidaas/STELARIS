@@ -1,0 +1,98 @@
+# Configuration STELARIS
+# ROOT_PATH peut aussi etre force via variable d'environnement ROOT_PATH.
+
+root_path:
+
+data_dir: DATA
+raw_dir: 00_RAW
+interim_dir: 01_INTERIM
+processed_dir: 02_PROCESSED
+training_dir: 03_TRAINING
+
+gnss_dir: GNSS_RINEX
+gnss_obs_dir: OBS
+gnss_nav_dir: NAV
+gt_dir: GROUNDTRUTH
+
+lidar_ta_relpath: IGN_LiDAR/TA_diff_pkk_lidarhd_classe.shp
+osm_pbf_relpath: OSM/corse.osm.pbf
+grille_altitude_relpath: IGN/GRILLE_CONVERTION_ALTITUDE_WGS84_IGN69
+grille_altitude_file: fr_ign_RAF20.tif
+lidar_dir_relpath: IGN/TUILES_LIDAR_HD
+
+models_dir: MODELS
+
+
+long_col: longitude
+lat_col: latitude
+
+wfs_url: https://data.geopf.fr/wfs/ows
+wfs_version: "2.0.0"
+lidar_layer: IGNF_NUAGES-DE-POINTS-LIDAR-HD:dalle
+
+
+rayon_recherche: 20.0
+n_workers: 5
+decimation_factor: 1
+
+python_rinex_interpreter: python
+python_labelisation_interpreter: python
+
+chunk_size: 1048576
+
+
+# -----LABELISATION-----
+params_labelisation:
+  seuil_vegetation: 0.3 # A ajuster en fonction de la densité de la végétation et des caractéristiques du lidar
+  seuil_melange: 0.2
+  seuil_ciel_ouvert: 30.0 # En degrés à partir de la normale de l'antenne
+  distance_scan: 5 # Distance maximale pour considérer un point comme voisin dans la classification (en mètres)
+
+
+#-----ENTRAINEMENT MODELES-----
+params_entrainement:
+  test_size: 0.2
+  val_size: 0.0
+  random_state_split: 42
+  random_state_val: 123
+  segment_length_m : 2000.0
+
+column_mapping:
+  latitude:
+    - latitude
+    - lat
+    - lat_gt
+    - latitude_gt
+    - y_coord
+    - "latitude[deg]"
+  longitude:
+    - longitude
+    - lon
+    - long
+    - lon_gt
+    - longitude_gt
+    - x_coord
+    - "longitude[deg]"
+  time_utc:
+    - timestamp
+    - gps_time
+    - time
+    - date_time
+    - time_utc
+    - "#UTCtime"
+  altitude:
+    - altitude
+    - alt
+    - elevation
+    - height
+    - altitude_gt
+    - z_coord
+    - "altitude[m]"
+    - "height[m]"
+  velocity:
+    - velocity
+    - speed
+    - vitesse
+    - ground_speed
+    - "velocity[m/s]"
+    - "velocityForward[m/s]"

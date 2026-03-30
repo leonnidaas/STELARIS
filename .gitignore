@@ -1,0 +1,33 @@
+# --- Environnements Virtuels ---
+# On ignore les dossiers venv car ils sont spécifiques à ta machine
+APPS/venv_label/
+APPS/venv_rinex/
+.venv/
+venv/
+
+# --- Python & Cache ---
+__pycache__/
+**/*.py[cod]
+**/*.cpython-*.pyc
+.pytest_cache/
+
+# --- Données (Le plus lourd) ---
+# On garde la structure mais on ignore les fichiers volumineux
+DATA/00_RAW/**
+DATA/01_INTERIM/**
+DATA/02_PROCESSED/**
+DATA/03_TRAINING/**
+
+
+# --- Modèles & Artefacts ---
+# On ne versionne pas les poids des modèles (.keras, .json XGB)
+MODELS/GRU/**
+MODELS/XGBOOST/**
+
+# --- Configuration & Secrets ---
+.env
+
+# Jupyter notebooks and checkpoints
+*.ipynb
+**/.ipynb_checkpoints/
+
