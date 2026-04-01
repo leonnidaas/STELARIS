@@ -26,7 +26,7 @@ def compute_sky_mask_deg_from_relative(z_rel, dist_h, c_pts, min_dist_h=0.8, ign
         return 0.0
 
     angles = np.degrees(np.arctan2(z_rel[valid], np.maximum(dist_h[valid], 1e-6)))
-    return float(np.percentile(angles, 100))
+    return float(np.percentile(angles, 98))
 
 
 def _add_local_heading_vectors(df):
@@ -99,6 +99,63 @@ def _compute_obs_type(is_build, is_veg, is_bridge):
     return 0
 
 
+def _read_tile_points_bbox_filtered(
+    fh,
+    df_tile,
+    preselect_radius,
+    decimation_factor,
+    lidar_chunk_size=1_000_000,
+):
+    """Lit une dalle en mode streaming et garde uniquement les points proches de la bbox trajectoire."""
+    step = max(int(decimation_factor), 1)
+
+    min_x = float(df_tile["x_gt"].min()) - float(preselect_radius)
+    max_x = float(df_tile["x_gt"].max()) + float(preselect_radius)
+    min_y = float(df_tile["y_gt"].min()) - float(preselect_radius)
+    max_y = float(df_tile["y_gt"].max()) + float(preselect_radius)
+
+    xs, ys, zs, cs = [], [], [], []
+
+    # Fallback: anciennes versions/API sans chunk iterator.
+    if not hasattr(fh, "chunk_iterator"):
+        las = fh.read()
+        x = las.x[::step]
+        y = las.y[::step]
+        z = las.z[::step]
+        c = las.classification[::step]
+        in_bbox = (x >= min_x) & (x <= max_x) & (y >= min_y) & (y <= max_y)
+        return x[in_bbox], y[in_bbox], z[in_bbox], c[in_bbox]
+
+    for points in fh.chunk_iterator(max(int(lidar_chunk_size), 1)):
+        x = points.x
+        y = points.y
+        z = points.z
+        c = points.classification
+
+        if step > 1:
+            x = x[::step]
+            y = y[::step]
+            z = z[::step]
+            c = c[::step]
+
+        in_bbox = (x >= min_x) & (x <= max_x) & (y >= min_y) & (y <= max_y)
+        if np.any(in_bbox):
+            xs.append(x[in_bbox])
+            ys.append(y[in_bbox])
+            zs.append(z[in_bbox])
+            cs.append(c[in_bbox])
+
+    if not xs:
+        return np.array([], dtype=float), np.array([], dtype=float), np.array([], dtype=float), np.array([], dtype=np.int64)
+
+    return (
+        np.concatenate(xs),
+        np.concatenate(ys),
+        np.concatenate(zs),
+        np.concatenate(cs),
+    )
+
+
 def _compute_point_features(row, x_pts, y_pts, z_pts, c_pts, gnss_offset_z=0.0):
     # Repere antenne: meme convention que la visualisation (decalage ajoute a z_rel).
     z_ant = float(row["z_gt_ign69"])
@@ -116,7 +173,7 @@ def _compute_point_features(row, x_pts, y_pts, z_pts, c_pts, gnss_offset_z=0.0):
     is_build = 6 in c_pts[above] if np.any(above) else False
     is_veg = np.any(np.isin(c_pts[above], [3, 4, 5])) if np.any(above) else False
     is_bridge = 17 in c_pts[above] if np.any(above) else False
-    under = int(np.any((dist_h < 2.0) & (z_pts > z_ant + 2.0) & (~np.isin(c_pts, [0, 1]))))
+    under = int(np.any((dist_h < 2.0) & (z_pts > z_ant) & (~np.isin(c_pts, [0, 1]))))
 
     signal_denied = int(
         np.isnan(row["longitude_gnss"]) or np.isnan(row["latitude_gnss"]) or np.isnan(row["altitude_gnss"])
@@ -140,13 +197,14 @@ def process_single_tile_labelisation(
     corridor_width=10.0,
     corridor_length=None,
     gnss_offset_z=0.0,
+    lidar_chunk_size=1_000_000,
 ):
     """Traite une dalle LiDAR et extrait les features utiles a la labellisation."""
     try:
         with laspy.open(tile) as fh:
             h = fh.header
             mask = (
-                (trajectory_df["x_gt"] >= h.min[0])
+                  (trajectory_df["x_gt"] >= h.min[0])
                 & (trajectory_df["x_gt"] <= h.max[0])
                 & (trajectory_df["y_gt"] >= h.min[1])
                 & (trajectory_df["y_gt"] <= h.max[1])
@@ -155,15 +213,30 @@ def process_single_tile_labelisation(
             df_tile = trajectory_df[mask].copy()
             if len(df_tile) == 0:
                 return None
-
-            las = fh.read()
-            step = max(int(decimation_factor), 1)
-            l_x, l_y, l_z, l_c = las.x[::step], las.y[::step], las.z[::step], las.classification[::step]
-
-            tree = cKDTree(np.stack((l_x, l_y), axis=1))
             half_w, half_l, preselect_radius = _compute_spatial_params(
                 search_radius, spatial_mode, corridor_width, corridor_length
             )
+
+            l_x, l_y, l_z, l_c = _read_tile_points_bbox_filtered(
+                fh,
+                df_tile,
+                preselect_radius=preselect_radius,
+                decimation_factor=decimation_factor,
+                lidar_chunk_size=lidar_chunk_size,
+            )
+
+            if l_x.size == 0:
+                features = []
+                for _, row in df_tile.iterrows():
+                    signal_denied = int(
+                        np.isnan(row["longitude_gnss"])
+                        or np.isnan(row["latitude_gnss"])
+                        or np.isnan(row["altitude_gnss"])
+                    )
+                    features.append(_empty_feature(signal_denied=signal_denied))
+                return pd.concat([df_tile.reset_index(drop=True), pd.DataFrame(features)], axis=1)
+
+            tree = cKDTree(np.stack((l_x, l_y), axis=1))
             all_indices = tree.query_ball_point(df_tile[["x_gt", "y_gt"]].values, preselect_radius)
 
             features = []
@@ -228,6 +301,7 @@ def process_lidar_tiles_for_labelisation(
     corridor_width=10.0,
     corridor_length=None,
     gnss_offset_z=None,
+    lidar_chunk_size=1_000_000,
 ):
     """Pipeline parallele d'extraction des features LiDAR pour la labellisation."""
     if spatial_mode not in {"circle", "corridor"}:
@@ -259,6 +333,7 @@ def process_lidar_tiles_for_labelisation(
             corridor_width=corridor_width,
             corridor_length=corridor_length,
             gnss_offset_z=gnss_offset_z,
+            lidar_chunk_size=lidar_chunk_size,
         )
         results = list(tqdm(executor.map(process_func, tiles), total=len(tiles)))
 

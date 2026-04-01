@@ -273,18 +273,20 @@ def render_viz_3d(trajet_id, LIDAR_DIR, matched_df, gnss_offset):
         def render_legend():
             # Affichage de la légende propre
             legend_data = [
-                ("Sol / Ballast", "#804019", "Code 2"),
+                ("Sol ", "#804019", "Code 2"),
                 ("Végétation", "#00FA00", "Codes 3-5"),
                 ("Bâtiments", "#FA0000", "Code 6"),
-                ("Ponts / Tunnels", "#FA8000", "Code 17"),
-                ("Fils / Non-classé", "#808080", "Codes 0-1"),
+                ("Tablier de Ponts", "#FA8000", "Code 17"),
+                ("Non-classé", "#808080", "Code 1"),
+                ("Eau", "#2B87FFFF", "Code 9"),
+                ("Poteaux / Caténaires", "#FA00FA", "Codes 64"),
                 ("Trajectoire", "#000000", "Ligne Noire")
             ]
             
             for label, color, code in legend_data:
                 st.markdown(f"""
                     <div class="legend-box" style="background-color: {color}; padding: 5px; margin-bottom: 5px; border-radius: 3px; font-weight: bold;">
-                        <span style="background-color: #FFFFFF; margin-left: 5px; border-radius: 12px; padding: 3px;">{label}</span>
+                        <span style="background-color: #FFFFFF; margin-left: 6px; border-radius: 12px; padding: 3px 10px ; ">{label}</span>
                         <span style="float:right; opacity:0.9; margin-right: 5px; color: #000000;">{code}</span>
                     </div>
                     """, unsafe_allow_html=True)

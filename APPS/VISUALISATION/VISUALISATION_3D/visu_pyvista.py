@@ -42,6 +42,7 @@ CLS_COLORS_RGB = {
     5:  (  0, 102,   0),   # Végétation haute  → Vert foncé
     6:  (255,   0,   0),   # Bâtiment          → Rouge
     17: (255, 128,   0),   # Pont / Structure  → Orange
+    64: (  0, 128, 255),   # Poteaux/Rails     → Bleu
 }
 DEFAULT_COLOR_RGB = (128, 128, 128)
 
@@ -788,8 +789,8 @@ if __name__ == "__main__":
     if os.path.exists(CSV_FILE) and os.path.exists(LIDAR_DIR):
         df  = pd.read_csv(CSV_FILE)
         viz = LidarVisualizer(LIDAR_DIR, df)
-        viz.show_corridor(
-            start=0, end=0.01,
+        viz.show_corridor_flythrough(
+            start=0, end=1,
             mode="percent",
             width=50,
             factor=1,

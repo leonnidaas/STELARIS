@@ -140,6 +140,7 @@ def render_analyses(df, trajet_id=None):
         "CMC": ("gnss_feat_CMC_e1", "cm", True),
         "Label Environnement": ("label", "Label", False),
         "Vitesse (m/s)": ("velocity", "Vitesse (m/s)", False),
+        "CN0 (dB-Hz)": ("gnss_feat_CN0 mean", "CN0 (dB-Hz)", False),
     }
 
     # 2. Couleurs spécifiques pour le ruban de labels (Heatmap)

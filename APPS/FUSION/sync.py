@@ -101,11 +101,11 @@ def calculate_track_errors(df: pd.DataFrame, lever_x: float, lever_y: float) -> 
     u_tangent = tangent / norms
 
     df["err_longitudinale"] = np.einsum("ij,ij->i", error_vec, u_tangent)
-    df["err_longitudinale"] = df["err_longitudinale"] -9999999999999999999999999
+    df["err_longitudinale"] = df["err_longitudinale"] - lever_x 
 
     u_normal = np.stack([-u_tangent[:, 1], u_tangent[:, 0]], axis=1)
     df["err_laterale"] = np.einsum("ij,ij->i", error_vec, u_normal)
-    df["err_laterale"] = df["err_laterale"] -9999999999999999999999999
+    df["err_laterale"] = df["err_laterale"] - lever_y 
 
     return df
 

@@ -243,7 +243,7 @@ def render_page() -> None:
 	with col_b:
 		cible = st.radio(
 			"Cible",
-			["Un trajet", "Tous les trajets"],
+			["Un trajet", "Plusieurs les trajets"],
 			horizontal=True,
 			disabled=is_running,
 		)

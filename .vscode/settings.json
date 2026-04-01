@@ -15,6 +15,10 @@
         {
             "folderPath": "STELARIS/APPS/LABELISATION_AUTO_LIDAR_HD_IGN/",
             "color": "foldercolorizer.color_00cc66"
+        },
+        {
+            "folderPath": "STELARIS/APPS/VISUALISATION/",
+            "color": "foldercolorizer.color_99ccff"
         }
     ]
 }

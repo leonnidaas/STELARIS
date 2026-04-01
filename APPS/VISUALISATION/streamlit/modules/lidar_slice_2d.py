@@ -560,7 +560,7 @@ def render_lidar_slice_2d(trajet_id, lidar_dir, matched_df, gnss_offset_z=0.0):
             zone_limit = float(corridor_length)
             fetch_radius = float(np.hypot(corridor_length, corridor_width * 0.5) + 2.0)
     with c2:
-        decimation = st.slider("Decimation LiDAR", min_value=1, max_value=12, value=2, step=1)
+        decimation = st.slider("Decimation LiDAR", min_value=1, max_value=12, value=4, step=1)
     with c3:
         max_points = st.slider("Max points affiches", min_value=2000, max_value=90000, value=25000, step=1000)
     with c4:
@@ -763,7 +763,7 @@ def render_lidar_slice_2d(trajet_id, lidar_dir, matched_df, gnss_offset_z=0.0):
     i += 1
     M[i].metric("cn0_mean", f"{row['gnss_feat_CN0 mean'].iloc[0]:.2f} dB-Hz")
     i += 1
-    M[i].metric("Points utilises", f"{len(points_xyz):,}")
+    M[i].metric("Label", f"{row['label'].iloc[0] if 'label' in row else 'N/A'}")
     i += 1
     if spatial_mode == "Rayon":
         M[i].metric("Zone", f"Rayon {radius} m")

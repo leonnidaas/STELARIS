@@ -24,12 +24,15 @@ class LidarVisualizer:
         self.default_colors = {
             2: [0.5, 0.3, 0.1],   # Sol (Brun)
             6: [1, 0, 0],         # Bâtiments (Rouge)
-            17: [1, 0.5, 0],      # Ponts/Structures (Orange)
+            17:[1, 0.5, 0],      # Tablier de Ponts (Orange)
             3: [0, 1, 0],         # Végétation basse (Vert)
             4: [0, 0.7, 0],       # Végétation moyenne
             5: [0, 0.4, 0],       # Végétation haute
             0: [0.5, 0.5, 0.5],   # Non classé (Gris)
-            1: [0.5, 0.5, 0.5]    # Créé jamais classé
+            1: [0.5, 0.5, 0.5],   # Non classé (Gris)
+            9: [0, 0.5, 1],       # eau bleu
+            64:[1, 0, 1],         # poteaux (ROSES)
+            67:[1, 1, 0],         # autre batis (Jaune)
         }
         self.traj3d_color = [0, 0, 0]  # noir pour la trajectoire
 
@@ -68,6 +71,62 @@ class LidarVisualizer:
         self.active_dynamic_loader = None
         self.active_traj_times = None
         self.active_progress_callback = None
+
+    def _normalize_class_factors(self, class_decimation_factors):
+        """Normalise la config de décimation par classe vers {int: int>=1}."""
+        if not class_decimation_factors:
+            return {}
+
+        out = {}
+        for k, v in class_decimation_factors.items():
+            try:
+                cls_id = int(k)
+                fac = max(1, int(v))
+                out[cls_id] = fac
+            except Exception:
+                continue
+        return out
+
+    def _apply_adaptive_decimation(
+        self,
+        points,
+        classes,
+        dists_to_traj,
+        base_factor=1,
+        adaptive_by_distance=True,
+        near_distance=15.0,
+        far_distance=50.0,
+        mid_factor=2,
+        far_factor=4,
+        class_decimation_factors=None,
+    ):
+        """Décimation déterministe par distance à la trajectoire + surcharge optionnelle par classe."""
+        if points is None or len(points) == 0:
+            return points, classes
+
+        n = len(points)
+        base_factor = max(1, int(base_factor))
+        factors = np.full(n, base_factor, dtype=np.int32)
+
+        if adaptive_by_distance and dists_to_traj is not None and len(dists_to_traj) == n:
+            d = np.asarray(dists_to_traj, dtype=float)
+            near_distance = float(max(0.0, near_distance))
+            far_distance = float(max(near_distance, far_distance))
+            mid_factor = max(1, int(mid_factor))
+            far_factor = max(mid_factor, int(far_factor))
+
+            factors = np.where(d > near_distance, base_factor * mid_factor, factors)
+            factors = np.where(d > far_distance, base_factor * far_factor, factors)
+
+        class_factors = self._normalize_class_factors(class_decimation_factors)
+        if class_factors:
+            cls = np.asarray(classes, dtype=np.int32)
+            for cls_id, fac in class_factors.items():
+                factors = np.where(cls == cls_id, np.maximum(factors, fac), factors)
+
+        idx = np.arange(n, dtype=np.int64)
+        keep = (idx % np.maximum(factors, 1)) == 0
+        return points[keep], classes[keep]
 
     def configure_viewer(self, **overrides):
         """Met à jour les paramètres persistants du visualiseur."""
@@ -702,7 +761,24 @@ class LidarVisualizer:
         vis.destroy_window()
         
 
-    def show_corridor(self, start=0, end=1, mode='percent', width=40, factor=1, color_mode='class', hide_wires=False, gnss_offset=(0, 0, 4.137), **viewer_options):
+    def show_corridor(
+        self,
+        start=0,
+        end=1,
+        mode='percent',
+        width=40,
+        factor=1,
+        color_mode='class',
+        hide_wires=False,
+        gnss_offset=(0, 0, 4.137),
+        adaptive_decimation=False,
+        near_distance=15.0,
+        far_distance=50.0,
+        mid_factor=2,
+        far_factor=4,
+        class_decimation_factors=None,
+        **viewer_options,
+    ):
         """Affiche les points LiDAR dans un rayon de 'width' mètres autour du train."""
         self.current_color_mode = color_mode
         df_seg = self._get_segment(start, end, mode)
@@ -716,6 +792,21 @@ class LidarVisualizer:
             dists, _ = traj_tree.query(p[:, :2], k=1)
             mask = dists <= width if width is not None else np.ones(len(p), dtype=bool)
             p, cl = p[mask], cl[mask]
+            d_local = dists[mask]
+
+            if adaptive_decimation and len(p) > 0:
+                p, cl = self._apply_adaptive_decimation(
+                    p,
+                    cl,
+                    d_local,
+                    base_factor=1,
+                    adaptive_by_distance=True,
+                    near_distance=near_distance,
+                    far_distance=far_distance,
+                    mid_factor=mid_factor,
+                    far_factor=far_factor,
+                    class_decimation_factors=class_decimation_factors,
+                )
 
             if len(p) > 0:
                 all_p.append(p)
@@ -736,6 +827,12 @@ class LidarVisualizer:
         hide_wires=False,
         gnss_offset=(0, 0, 4.137),
         progress_callback=None,
+        adaptive_decimation=False,
+        near_distance=15.0,
+        far_distance=50.0,
+        mid_factor=2,
+        far_factor=4,
+        class_decimation_factors=None,
         **viewer_options,
     ):
         """Fly-through optimisé: ne charge que les points proches de la caméra."""
@@ -749,18 +846,36 @@ class LidarVisualizer:
         self.current_color_mode = color_mode
         df_seg = self._get_segment(start, end, mode)
         traj_3d = self._get_traj3d(df_seg, gnss_offset=gnss_offset)
+        traj_tree = cKDTree(traj_3d[:, :2])
         self.active_traj_times = df_seg['time_utc'].to_numpy()
         self.active_progress_callback = progress_callback
         candidate_tiles = self._get_candidate_tiles(traj_3d, max(width if width is not None else 100, self.camera_radius))
 
         def dynamic_loader(camera_position):
-            return self._load_points_near_position(
+            pts, cls = self._load_points_near_position(
                 camera_position[:2],
                 candidate_tiles,
                 radius=self.camera_radius,
                 factor=factor,
                 hide_wires=hide_wires,
             )
+
+            if adaptive_decimation and len(pts) > 0:
+                dists, _ = traj_tree.query(pts[:, :2], k=1)
+                pts, cls = self._apply_adaptive_decimation(
+                    pts,
+                    cls,
+                    dists,
+                    base_factor=1,
+                    adaptive_by_distance=True,
+                    near_distance=near_distance,
+                    far_distance=far_distance,
+                    mid_factor=mid_factor,
+                    far_factor=far_factor,
+                    class_decimation_factors=class_decimation_factors,
+                )
+
+            return pts, cls
 
         initial_points, initial_classes = dynamic_loader(traj_3d[0])
         self._render(
@@ -787,7 +902,7 @@ if __name__ == "__main__":
         
         viz.show_corridor_flythrough(
             start=0, 
-            end=1,
+            end=0.1,
             mode='percent', 
             width=50, 
             factor=1, 
