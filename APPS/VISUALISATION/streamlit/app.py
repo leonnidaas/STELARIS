@@ -9,16 +9,14 @@ import streamlit as st
 from streamlit_folium import st_folium
 from streamlit.components.v1 import html as st_html
 
-from utils import GT_DIR, INTERIM_DIR, PROCESSED_DIR
+from utils import GT_DIR, INTERIM_DIR, PROCESSED_DIR, iter_gt_scenario_dirs, iter_scenario_dirs
 
 
 st.set_page_config(page_title="STELARIS Control Center", layout="wide", page_icon="🛰️")
 
 
-def _count_dirs(path: Path) -> int:
-    if not path.exists():
-        return 0
-    return len([p for p in path.iterdir() if p.is_dir()])
+def _count_scenarios(path: Path) -> int:
+    return len(iter_scenario_dirs(path))
 
 
 def _count_csv_recursive(path: Path) -> int:
@@ -137,7 +135,7 @@ def _load_coords_from_gt_file(gt_file: Path, max_points: int = 3000) -> np.ndarr
 def _collect_all_routes(gt_dir: Path, max_points_per_trace: int = 3000):
     records = []
 
-    for traj_dir in sorted([p for p in gt_dir.iterdir() if p.is_dir()]):
+    for traj_dir in iter_gt_scenario_dirs(gt_dir):
         # Nom logique du trajet: avant "__" quand present.
         route_key = traj_dir.name.split("__", 1)[0]
 
@@ -208,7 +206,18 @@ def _render_static_all_routes_map() -> None:
         control_scale=True,
         prefer_canvas=True,
     )
-
+    ign_lidar_wms = "https://data.geopf.ign.fr/wms-r?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap"
+    show_ign = st.checkbox("Afficher les tuiles LiDAR HD IGN (lentes)", key="home_show_ign_lidar")
+    if show_ign:
+        folium.WmsTileLayer(
+            url=ign_lidar_wms,
+            layers="LIDARHD_MAILLAGE_DISPO",
+            name="COUVERTURE_LIDAR_HD_IGN",
+            fmt="image/png",
+            transparent=True,
+            overlay=True,
+            control=True,
+        ).add_to(m)
     for rec in records:
         route_key = rec["route_key"]
         count = route_counts.get(route_key, 1)
@@ -233,20 +242,20 @@ def _render_static_all_routes_map() -> None:
         st.warning(f"Rendu streamlit-folium indisponible, fallback HTML active ({e}).")
         st_html(m._repr_html_(), height=620, scrolling=False)
 
-    top_routes = sorted(route_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+    top_routes = sorted(route_counts.items(), key=lambda x: x[1], reverse=True)
     st.caption(f"Trajets uniques affiches: {len(records)} | scenarios total: {sum(route_counts.values())}")
-    st.write("Top 10 trajets les plus repetes:")
-    st.table(pd.DataFrame(top_routes, columns=["trajet", "occurrences"]))
-
+    st.write("Répétitions :")
+    # on fait un histogrammes des trejats et de leur répétition pour voir les trajets les plus fréquents
+    st.bar_chart(pd.DataFrame(top_routes[:30], columns=["trajet", "occurrences"]).set_index("trajet"))  
 
 st.title("STELARIS Control Center")
 st.caption("Accueil de l'application: supervision, lancement des pipelines et visualisation des trajets.")
 
 col1, col2, col3 = st.columns(3)
 with col1:
-    st.metric("Trajets detectes", _count_dirs(GT_DIR))
+    st.metric("Trajets detectes", _count_scenarios(GT_DIR))
 with col2:
-    st.metric("Dossiers interim", _count_dirs(INTERIM_DIR))
+    st.metric("Dossiers interim", _count_scenarios(INTERIM_DIR))
 with col3:
     st.metric("CSV produits", _count_csv_recursive(PROCESSED_DIR))
 

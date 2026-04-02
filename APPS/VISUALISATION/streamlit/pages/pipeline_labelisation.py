@@ -2,6 +2,7 @@ import subprocess
 import sys
 import shutil
 import json
+import re
 from typing import Any
 from pathlib import Path
 from datetime import datetime
@@ -9,7 +10,7 @@ from datetime import datetime
 import streamlit as st
 from LABELISATION_AUTO_LIDAR_HD_IGN.run_params import load_latest_labelisation_run_params
 
-from utils import CHUNK_SIZE, GT_DIR, N_WORKERS, PYTHON_LABELISATION_INTERPRETER, PYTHON_RINEX_INTERPRETER, get_traj_paths
+from utils import CHUNK_SIZE, N_WORKERS, PYTHON_LABELISATION_INTERPRETER, PYTHON_RINEX_INTERPRETER, get_traj_paths, list_traj_ids
 
 
 APPS_ROOT = Path(__file__).resolve().parents[3]
@@ -32,7 +33,28 @@ PHASES = {
 
 
 def list_trajets() -> list[str]:
-	return sorted([p.name for p in GT_DIR.iterdir() if p.is_dir()])
+	return list_traj_ids()
+
+
+def _scenario_start_label(sid: str) -> str:
+	m = re.search(r"__SCENARIO_(\d{8})_(\d{6}(?:\.\d+)?)", sid)
+	if not m:
+		return sid
+	date_raw = m.group(1)
+	time_raw = m.group(2)
+	date_fmt = f"{date_raw[:4]}-{date_raw[4:6]}-{date_raw[6:8]}"
+	time_fmt = f"{time_raw[:2]}:{time_raw[2:4]}:{time_raw[4:]}"
+	return f"{date_fmt} {time_fmt}"
+
+
+def _build_trajet_scenarios_map(scenarios: list[str]) -> dict[str, list[str]]:
+	out: dict[str, list[str]] = {}
+	for scenario_id in scenarios:
+		trajet_key = scenario_id.split("__", 1)[0] if "__" in scenario_id else scenario_id
+		out.setdefault(trajet_key, []).append(scenario_id)
+	for k in out:
+		out[k] = sorted(out[k])
+	return out
 
 
 def _resolve_python_for_env(env_name: str) -> str:
@@ -227,10 +249,13 @@ def render_page() -> None:
 	if is_running:
 		st.warning("Pipeline en cours: les parametres sont verrouilles jusqu'a la fin de l'execution.")
 
-	trajets = list_trajets()
-	if not trajets:
+	scenarios = list_trajets()
+	if not scenarios:
 		st.error("Aucun trajet trouve dans le dossier GroundTruth.")
 		return
+
+	trajets_map = _build_trajet_scenarios_map(scenarios)
+	trajets = sorted(trajets_map.keys())
 
 	col_a, col_b = st.columns(2)
 	with col_a:
@@ -243,7 +268,7 @@ def render_page() -> None:
 	with col_b:
 		cible = st.radio(
 			"Cible",
-			["Un trajet", "Plusieurs les trajets"],
+			["Un scenario", "Tous les scenarios d'un trajet", "Selection manuelle"],
 			horizontal=True,
 			disabled=is_running,
 		)
@@ -252,10 +277,28 @@ def render_page() -> None:
 	if mode == "Phase unique":
 		phase_choisie = st.radio("Phase a executer", list(PHASES.keys()), disabled=is_running)
 
-	if cible == "Un trajet":
-		selected_trajets = [st.selectbox("Trajet", trajets, disabled=is_running)]
+	if cible == "Un scenario":
+		selected_trajet = st.selectbox("Trajet", trajets, disabled=is_running)
+		scenarios_du_trajet = trajets_map.get(selected_trajet, [])
+		selected_scenario = st.selectbox(
+			"Scenario (debut)",
+			scenarios_du_trajet,
+			format_func=_scenario_start_label,
+			disabled=is_running,
+		)
+		selected_trajets = [selected_scenario]
+	elif cible == "Tous les scenarios d'un trajet":
+		selected_trajet = st.selectbox("Trajet", trajets, disabled=is_running)
+		selected_trajets = trajets_map.get(selected_trajet, [])
+		st.info(f"{len(selected_trajets)} scenario(s) seront lances pour le trajet {selected_trajet}.")
 	else:
-		selected_trajets = st.multiselect("Trajets", trajets, default=trajets, disabled=is_running)
+		selected_trajets = st.multiselect(
+			"Scenarios",
+			scenarios,
+			default=scenarios,
+			format_func=lambda sid: f"{sid.split('__', 1)[0]} | {_scenario_start_label(sid)}",
+			disabled=is_running,
+		)
 
 	stop_on_error = st.checkbox(
 		"Arreter a la premiere erreur (mode pipeline complet)",
@@ -283,9 +326,26 @@ def render_page() -> None:
 	radius = 10.0
 	corridor_width = 6.0
 	corridor_length = 30.0
+	step1_select_tiles = True
+	step2_download_tiles = True
+	step3_fusion_gt_gnss = True
+	step4_extract_lidar = True
+	step5_fusion_features = True
+	step6_label = True
+	step7_final_fusion = True
 
 	if show_lidar_params:
 		with st.expander("Parametres du pipeline Labelisation LiDAR", expanded=False):
+			st.markdown("Sous-etapes a executer")
+			step1_select_tiles = st.checkbox("Etape 1 - Selection des tuiles", value=True, disabled=is_running)
+			step2_download_tiles = st.checkbox("Etape 2 - Telechargement des tuiles", value=True, disabled=is_running)
+			step3_fusion_gt_gnss = st.checkbox("Etape 3 - Fusion GT + GNSS", value=True, disabled=is_running)
+			step4_extract_lidar = st.checkbox("Etape 4 - Extraction features LiDAR", value=True, disabled=is_running)
+			step5_fusion_features = st.checkbox("Etape 5 - Fusion features", value=True, disabled=is_running)
+			step6_label = st.checkbox("Etape 6 - Labelisation", value=True, disabled=is_running)
+			step7_final_fusion = st.checkbox("Etape 7 - Fusion finale", value=True, disabled=is_running)
+			st.divider()
+
 			label_workers = st.number_input(
 				"Workers",
 				min_value=1,
@@ -352,6 +412,13 @@ def render_page() -> None:
 		"search_radius": float(radius),
 		"corridor_width": float(corridor_width),
 		"corridor_length": float(corridor_length),
+		"run_step_1_select_tiles": bool(step1_select_tiles),
+		"run_step_2_download_tiles": bool(step2_download_tiles),
+		"run_step_3_fusion_gt_gnss": bool(step3_fusion_gt_gnss),
+		"run_step_4_extract_lidar": bool(step4_extract_lidar),
+		"run_step_5_fusion_features": bool(step5_fusion_features),
+		"run_step_6_labelisation": bool(step6_label),
+		"run_step_7_final_fusion": bool(step7_final_fusion),
 		"verbose": True,
 	}
 

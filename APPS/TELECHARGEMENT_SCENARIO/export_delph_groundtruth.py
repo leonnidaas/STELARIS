@@ -10,7 +10,7 @@ APPS_DIR = Path(__file__).resolve().parents[1]
 if str(APPS_DIR) not in sys.path:
     sys.path.insert(0, str(APPS_DIR))
 
-from utils import GT_DIR
+from utils import GT_DIR, iter_scenario_dirs
 
 
 def load_scenario_delph(scenario_dir: Path) -> pd.DataFrame:
@@ -113,8 +113,11 @@ def export_if_missing_csv(scenario_dir: Path, dry_run: bool) -> str:
 
 
 def scan_groundtruth_folders(root: Path, dry_run: bool, recursive: bool) -> None:
-    pattern = "**/*" if recursive else "*"
-    candidates = sorted([p for p in root.glob(pattern) if p.is_dir()])
+    if recursive:
+        candidates = sorted([p for p in root.rglob("*") if p.is_dir()])
+    else:
+        # Auto-supporte le layout plat et LINE/SCENARIO.
+        candidates = iter_scenario_dirs(root)
 
     if not candidates:
         print(f"No scenario folder found in: {root}")
@@ -166,7 +169,7 @@ def main() -> None:
     parser.add_argument(
         "--recursive",
         action="store_true",
-        help="Scan nested directories recursively",
+        help="Scan nested directories recursively (deeper than LINE/SCENARIO)",
     )
 
     args = parser.parse_args()

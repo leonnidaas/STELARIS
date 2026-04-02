@@ -148,6 +148,11 @@ def scenario_id_from_dir(source_root: Path, dir_path: Path) -> str:
     return sanitize_token(str(rel).replace("/", "__"))
 
 
+def line_id_from_scenario_name(scenario_name: str) -> str:
+    """Extrait l'identifiant de ligne d'un nom scenario de type LINE__SCENARIO."""
+    return scenario_name.split("__", 1)[0]
+
+
 def choose_one_per_type(files: list[Path]) -> dict[str, Path]:
     by_type: dict[str, list[Path]] = {
         "obs": [],
@@ -194,6 +199,7 @@ def organize_source(
     move: bool = False,
     max_scenarios: int | None = None,
     verbose: bool = False,
+    group_by_line: bool = False,
 ) -> None:
     print(f"Scan recursive: {source_root}")
 
@@ -234,25 +240,36 @@ def organize_source(
 
         scenario_name = f"{depart}_{fin}__{scenario_id}"
         scenario_name = sanitize_token(scenario_name)
+        line_id = line_id_from_scenario_name(scenario_name)
 
         processed += 1
         if verbose:
             print(f"\nScenario: {scenario_name}")
             print(f"Source dir: {dir_path}")
 
-        obs_dst = GNSS_OBS / scenario_name / selected["obs"].name
-        nav_dst = GNSS_NAV / scenario_name / selected["nav"].name
+        if group_by_line:
+            obs_dst = GNSS_OBS / line_id / scenario_name / selected["obs"].name
+            nav_dst = GNSS_NAV / line_id / scenario_name / selected["nav"].name
+        else:
+            obs_dst = GNSS_OBS / scenario_name / selected["obs"].name
+            nav_dst = GNSS_NAV / scenario_name / selected["nav"].name
         obs_status = copy_or_move(selected["obs"], obs_dst, dry_run=dry_run, move=move)
         nav_status = copy_or_move(selected["nav"], nav_dst, dry_run=dry_run, move=move)
         gt_status = "-"
         speed_status = "-"
 
         if "groundtruth" in selected:
-            gt_dst = GT_DIR / scenario_name / selected["groundtruth"].name
+            if group_by_line:
+                gt_dst = GT_DIR / line_id / scenario_name / selected["groundtruth"].name
+            else:
+                gt_dst = GT_DIR / scenario_name / selected["groundtruth"].name
             gt_status = copy_or_move(selected["groundtruth"], gt_dst, dry_run=dry_run, move=move)
 
         if "speed" in selected:
-            speed_dst = GT_DIR / scenario_name / selected["speed"].name
+            if group_by_line:
+                speed_dst = GT_DIR / line_id / scenario_name / selected["speed"].name
+            else:
+                speed_dst = GT_DIR / scenario_name / selected["speed"].name
             speed_status = copy_or_move(selected["speed"], speed_dst, dry_run=dry_run, move=move)
 
         print(
@@ -299,6 +316,11 @@ def main() -> None:
         action="store_true",
         help="Show detailed per-scenario paths and warnings",
     )
+    parser.add_argument(
+        "--group-by-line",
+        action="store_true",
+        help="Store files under one extra folder level per line (LINE/SCENARIO)",
+    )
 
     args = parser.parse_args()
     source_root = Path(args.source_dir).expanduser().resolve()
@@ -312,6 +334,7 @@ def main() -> None:
         move=args.move,
         max_scenarios=args.max_scenarios,
         verbose=args.verbose,
+        group_by_line=args.group_by_line,
     )
 
 

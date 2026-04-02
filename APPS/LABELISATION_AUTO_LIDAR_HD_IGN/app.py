@@ -33,6 +33,13 @@ def _resolve_pipeline_options(options=None, **overrides):
         "search_radius": RAYON_RECHERCHE,
         "corridor_width": 6.0,
         "corridor_length": 30.0,
+        "run_step_1_select_tiles": True,
+        "run_step_2_download_tiles": True,
+        "run_step_3_fusion_gt_gnss": True,
+        "run_step_4_extract_lidar": True,
+        "run_step_5_fusion_features": True,
+        "run_step_6_labelisation": True,
+        "run_step_7_final_fusion": True,
     }
     if isinstance(options, dict):
         resolved.update(options)
@@ -93,12 +100,22 @@ def pipeline_labelisation(
     search_radius = float(opts["search_radius"])
     corridor_width = float(opts["corridor_width"])
     corridor_length = float(opts["corridor_length"])
+    run_step_1_select_tiles = bool(opts.get("run_step_1_select_tiles", True))
+    run_step_2_download_tiles = bool(opts.get("run_step_2_download_tiles", True))
+    run_step_3_fusion_gt_gnss = bool(opts.get("run_step_3_fusion_gt_gnss", True))
+    run_step_4_extract_lidar = bool(opts.get("run_step_4_extract_lidar", True))
+    run_step_5_fusion_features = bool(opts.get("run_step_5_fusion_features", True))
+    run_step_6_labelisation = bool(opts.get("run_step_6_labelisation", True))
+    run_step_7_final_fusion = bool(opts.get("run_step_7_final_fusion", True))
 
     if verbose:
         print(f"--- Pipeline de labelisation pour : {traj_id} ---")
 
     config = get_traj_paths(traj_id)
-    list_url_file = config["lidar_tiles"] / f"urls_{traj_id}.txt"
+    list_url_file = config.get("lidar_url_list_file", config["lidar_tiles"] / f"urls_{traj_id}.txt")
+    size_cache_file = config.get("lidar_size_cache_file", config["lidar_tiles"] / "remote_sizes_cache.json")
+    features_file = config.get("fusion_features_csv")
+    labels_file = config.get("labels_csv")
 
     try:
         run_params_file, latest_params_file, _ = store_labelisation_run_params(
@@ -116,207 +133,234 @@ def pipeline_labelisation(
     print("=" * 50)
     print("ÉTAPE 1 : Sélection des tuiles LiDAR à telécharger")
     print("=" * 50)
-    
-    try:
-        # Si on a déjà un fichier de liste d'URLs, on peut sauter cette étape (utile pour le développement)
-        if not os.path.exists(list_url_file):
-            download_tile_url_list(
-                traj_id=traj_id,
-                gt_file=config["raw_gt"],
-                output_file=list_url_file,
-                wfs_url=WFS_URL,
-                target_layer=LIDAR_LAYER,
-                version=WFS_VERSION,
-                verbose=True
-            )
-    except Exception as e:
-        print(f"Erreur lors de la sélection des tuiles : {e}")
-        return False
+    if run_step_1_select_tiles:
+        try:
+            has_existing_urls = False
+            existing_count = 0
+            if os.path.exists(list_url_file):
+                with open(list_url_file, "r", encoding="utf-8") as f:
+                    existing_count = sum(1 for line in f if line.strip())
+                has_existing_urls = existing_count > 0
+
+            # Si on a déjà une liste non vide, on saute la requête WFS.
+            if has_existing_urls:
+                print(f"Liste de tuiles déjà présente ({existing_count} URLs), étape 1 ignorée : {list_url_file}")
+            else:
+                download_tile_url_list(
+                    traj_id=traj_id,
+                    gt_file=config["raw_gt"],
+                    output_file=list_url_file,
+                    wfs_url=WFS_URL,
+                    target_layer=LIDAR_LAYER,
+                    version=WFS_VERSION,
+                    verbose=True
+                )
+        except Exception as e:
+            print(f"Erreur lors de la sélection des tuiles : {e}")
+            return False
+    else:
+        print("Étape 1 ignorée (désactivée dans les options).")
 
     print("=" * 50)
     print("ÉTAPE 2 : Téléchargement des tuiles LiDAR")
     print("=" * 50)
-    
-    try:
-        stats = download_tiles(
-            traj_tiles_dir=config["lidar_tiles"],
-            file_list=list_url_file,
-            output_folder=LIDAR_DIR,
-            max_workers=nb_workers,
-            chunk_size=chunk_size,
-            verify_integrity=verifier_integrite,
-            size_cache_file=config["lidar_tiles"] / f"remote_sizes_cache.json",
-            refresh_sizes=False,
-            prefetch_sizes=True,
-            verbose=True
-        )
-        
-        if stats['fail'] > 0:
-            print(f"\nAttention : {stats['fail']} fichiers n'ont pas pu être téléchargés.")
+    if run_step_2_download_tiles:
+        try:
+            stats = download_tiles(
+                traj_tiles_dir=config["lidar_tiles"],
+                file_list=list_url_file,
+                output_folder=LIDAR_DIR,
+                max_workers=nb_workers,
+                chunk_size=chunk_size,
+                verify_integrity=verifier_integrite,
+                size_cache_file=size_cache_file,
+                refresh_sizes=False,
+                prefetch_sizes=True,
+                verbose=True
+            )
+
+            if stats['fail'] > 0:
+                print(f"\nAttention : {stats['fail']} fichiers n'ont pas pu être téléchargés.")
+                return False
+
+        except FileNotFoundError as e:
+            print(f"Erreur : {e}")
             return False
-        
-    except FileNotFoundError as e:
-        print(f"Erreur : {e}")
-        return False
-    except ValueError as e:
-        print(f"Erreur : {e}")
-        return False
-    except Exception as e:
-        print(f"Erreur inattendue : {e}")
-        traceback.print_exc()
-        return False
+        except ValueError as e:
+            print(f"Erreur : {e}")
+            return False
+        except Exception as e:
+            print(f"Erreur inattendue : {e}")
+            traceback.print_exc()
+            return False
+    else:
+        print("Étape 2 ignorée (désactivée dans les options).")
     
     print("\n" + "=" * 50)
     print("ÉTAPE 3 : fusion de la GT et du GNSS pur")
     print("=" * 50)
-    # TODO : faire un lmessgae auto qui demande à bien vérifier les colones et à les ajouter dans le dictionaire de mapping si besoin, et à vérifier que les fichiers d'entrée ont bien les colonnes nécessaires (ex: time_utc, latitude, longitude, altitude) avant de lancer la fusion.
-    try:
-        # Charger les données GT et GNSS
-        df_gt = pd.read_csv(config["raw_gt"])
-        df_gnss = pd.read_csv(config["raw_gnss"])
-        gnss_offset = config["gnss_offset"]
-        if df_gnss is None:
-            print("Fichier GNSS non trouvé, étape fusion ignorée.")
-        else:
-            # Fusion et analyse
-            fusion_result = process_gnss_gt_fusion(
-                df_gt=standardize_dataframe(df_gt),
-                df_gnss=df_gnss,
-                output_csv=config["sync_csv"],
-                gnss_offset=gnss_offset,
-                verbose=True
-            )
-            print("Fusion GT-GNSS complétée avec succès !")
-    except FileNotFoundError as e:
-        print(f"Fichier manquant : {e}")
-        print("   Assurez-vous d'avoir généré le fichier PVT avec le script d'exploitation des RINEXs.")
-        return False
-    except ValueError as e:
-        print(f"Erreur lors de la fusion : {e}")
-        return False
-    except Exception as e:
-        print(f"Erreur inattendue lors de la fusion : {e}")
-        traceback.print_exc()
-        return False
+    if run_step_3_fusion_gt_gnss:
+        # TODO : faire un lmessgae auto qui demande à bien vérifier les colones et à les ajouter dans le dictionaire de mapping si besoin, et à vérifier que les fichiers d'entrée ont bien les colonnes nécessaires (ex: time_utc, latitude, longitude, altitude) avant de lancer la fusion.
+        try:
+            # Charger les données GT et GNSS
+            df_gt = pd.read_csv(config["raw_gt"])
+            df_gnss = pd.read_csv(config["raw_gnss"])
+            gnss_offset = config["gnss_offset"]
+            if df_gnss is None:
+                print("Fichier GNSS non trouvé, étape fusion ignorée.")
+            else:
+                process_gnss_gt_fusion(
+                    df_gt=standardize_dataframe(df_gt),
+                    df_gnss=df_gnss,
+                    output_csv=config["sync_csv"],
+                    gnss_offset=gnss_offset,
+                    verbose=True
+                )
+                print("Fusion GT-GNSS complétée avec succès !")
+        except FileNotFoundError as e:
+            print(f"Fichier manquant : {e}")
+            print("   Assurez-vous d'avoir généré le fichier PVT avec le script d'exploitation des RINEXs.")
+            return False
+        except ValueError as e:
+            print(f"Erreur lors de la fusion : {e}")
+            return False
+        except Exception as e:
+            print(f"Erreur inattendue lors de la fusion : {e}")
+            traceback.print_exc()
+            return False
+    else:
+        print("Étape 3 ignorée (désactivée dans les options).")
 
     print("\n" + "=" * 50)
     print("ÉTAPE 4 : Extraction des features LiDAR")
     print("=" * 50)
-    
-    gnss_offset_z = config.get("gnss_offset", (0.0, 0.0, 0.0))[2] if config.get("gnss_offset") else None
-    if extract_features | (not extract_features | os.path.exists(config["features_csv"])):
-        # On recalcule les features si le fichier n'existe pas ou si l'extraction est demandée
-        print("Extraction des features, fichier non présent ou extraction demandée : ", config["features_csv"])
-        try:
-            process_lidar_tiles_for_labelisation(
-                traj_id,
-                output_csv=config["features_csv"],
-                search_radius=search_radius,
-                decimation_factor=DECIMATION_FACTOR,
-                n_workers=nb_workers,
-                spatial_mode=spatial_mode,
-                corridor_width=corridor_width,
-                corridor_length=corridor_length,
-                gnss_offset_z=gnss_offset_z,
-            )
-            print("Extraction des features terminée !")
-        except Exception as e:
-            print(f"Erreur lors de l'extraction des features : {e}")
-            return False
+
+    if run_step_4_extract_lidar:
+        gnss_offset_z = config.get("gnss_offset", (0.0, 0.0, 0.0))[2] if config.get("gnss_offset") else None
+        if extract_features | (not extract_features | os.path.exists(config["features_csv"])):
+            # On recalcule les features si le fichier n'existe pas ou si l'extraction est demandée
+            print("Extraction des features, fichier non présent ou extraction demandée : ", config["features_csv"])
+            try:
+                process_lidar_tiles_for_labelisation(
+                    traj_id,
+                    output_csv=config["features_csv"],
+                    search_radius=search_radius,
+                    decimation_factor=DECIMATION_FACTOR,
+                    n_workers=nb_workers,
+                    spatial_mode=spatial_mode,
+                    corridor_width=corridor_width,
+                    corridor_length=corridor_length,
+                    gnss_offset_z=gnss_offset_z,
+                )
+                print("Extraction des features terminée !")
+            except Exception as e:
+                print(f"Erreur lors de l'extraction des features : {e}")
+                return False
+        else:
+            print("Fichier de features déjà présent et extraction non demandée, étape 4 ignorée : ", config["features_csv"])
     else:
-        print("Fichier de features déjà présent et extraction non demandée, étape 4 ignorée : ", config["features_csv"])
+        print("Étape 4 ignorée (désactivée dans les options).")
 
     print("\n" + "=" * 50)
     print("ÉTAPE 5 : Fusion GT + features GNSS + features LiDAR")
     print("=" * 50)
 
-    try:
-        gnss_features_file = config["gnss_features_csv"]
-        lidar_features_file = config["features_csv"]
-        fusion_features_file = config["fusion_features_csv"]
+    if run_step_5_fusion_features:
+        try:
+            gnss_features_file = config["gnss_features_csv"]
+            lidar_features_file = config["features_csv"]
+            fusion_features_file = config["fusion_features_csv"]
 
-        if not os.path.exists(gnss_features_file):
-            print(f"Fichier features GNSS absent : {gnss_features_file}")
-            print("Lance d'abord l'extraction GNSS (module EXTRACTION_DES_FEATURES_GNSS).")
+            if not os.path.exists(gnss_features_file):
+                print(f"Fichier features GNSS absent : {gnss_features_file}")
+                print("Lance d'abord l'extraction GNSS (module EXTRACTION_DES_FEATURES_GNSS).")
+                return False
+
+            if not os.path.exists(lidar_features_file):
+                print(f"Fichier features LiDAR absent : {lidar_features_file}")
+                print("L'etape 4 doit produire ce fichier avant la fusion des features.")
+                return False
+
+            process_feature_fusion_from_files(
+                path_lidar_features=lidar_features_file,
+                path_gnss_features=gnss_features_file,
+                path_gt=config["raw_gt"],
+                output_csv=fusion_features_file,
+                verbose=True,
+            )
+            print(f"Fusion des features terminee : {fusion_features_file}")
+        except Exception as e:
+            print(f"Erreur lors de la fusion des features : {e}")
+            traceback.print_exc()
             return False
-
-        if not os.path.exists(lidar_features_file):
-            print(f"Fichier features LiDAR absent : {lidar_features_file}")
-            print("L'etape 4 doit produire ce fichier avant la fusion des features.")
-            return False
-
-        process_feature_fusion_from_files(
-            path_lidar_features=lidar_features_file,
-            path_gnss_features=gnss_features_file,
-            path_gt=config["raw_gt"],
-            output_csv=fusion_features_file,
-            verbose=True,
-        )
-        print(f"Fusion des features terminee : {fusion_features_file}")
-    except Exception as e:
-        print(f"Erreur lors de la fusion des features : {e}")
-        traceback.print_exc()
-        return False
+    else:
+        print("Étape 5 ignorée (désactivée dans les options).")
 
     print("\n" + "=" * 50)
     print("ÉTAPE 6 : Labellisation de l'environnement")
     print("=" * 50)
-    
-    try:
-        # Le fichier d'entrée est la sortie de l'étape 5 (fusion multi-sources)
-        features_file = config.get("fusion_features_csv")
-        if features_file is None:
-            print("⚠ Chemin du fichier enrichi non configuré, utilisation du nom par défaut")
-            # Génération d'un nom par défaut basé sur le trajet
-            features_file = config["final_dir"] / f"env_lidar_{traj_id}.csv"
-        
-        labels_file = config.get("labels_csv")
-        labels_features_file = config.get("labels_plus_features_csv")
-        if labels_file is None:
-            print("⚠ Chemin du fichier de labels final non configuré, utilisation du nom par défaut")
-        if labels_features_file is None:
-            print("⚠ Chemin du fichier de fusion labels+features non configuré, utilisation du nom par défaut")
-        
-        df_labeled = process_labelling(
-            input_csv=str(features_file),
-            params=PARAMS_LABELISATION,
-            output_csv_final=str(labels_file),
-            output_csv_interim=str(labels_features_file) if labels_features_file else None,
-            verbose=True
-        )
-        print(f"Labellisation terminée ! Résultats : {labels_file}")
-    except FileNotFoundError as e:
-        print(f"Fichier d'entrée manquant : {e}")
-        print("   Assurez-vous que l'étape 4 (extraction des features) a été exécutée avec succès.")
-        return False
-    except ValueError as e:
-        print(f"Erreur lors de la labellisation : {e}")
-        return False
-    except Exception as e:
-        print(f"Erreur inattendue lors de la labellisation : {e}")
-        return False
+
+    if run_step_6_labelisation:
+        try:
+            # Le fichier d'entrée est la sortie de l'étape 5 (fusion multi-sources)
+            features_file = config.get("fusion_features_csv")
+            if features_file is None:
+                print("⚠ Chemin du fichier enrichi non configuré, utilisation du nom par défaut")
+                # Génération d'un nom par défaut basé sur le trajet
+                features_file = config["final_dir"] / f"env_lidar_{traj_id}.csv"
+
+            labels_file = config.get("labels_csv")
+            labels_features_file = config.get("labels_plus_features_csv")
+            if labels_file is None:
+                print("⚠ Chemin du fichier de labels final non configuré, utilisation du nom par défaut")
+            if labels_features_file is None:
+                print("⚠ Chemin du fichier de fusion labels+features non configuré, utilisation du nom par défaut")
+
+            process_labelling(
+                input_csv=str(features_file),
+                params=PARAMS_LABELISATION,
+                output_csv_final=str(labels_file),
+                output_csv_interim=str(labels_features_file) if labels_features_file else None,
+                verbose=True
+            )
+            print(f"Labellisation terminée ! Résultats : {labels_file}")
+        except FileNotFoundError as e:
+            print(f"Fichier d'entrée manquant : {e}")
+            print("   Assurez-vous que l'étape 4 (extraction des features) a été exécutée avec succès.")
+            return False
+        except ValueError as e:
+            print(f"Erreur lors de la labellisation : {e}")
+            return False
+        except Exception as e:
+            print(f"Erreur inattendue lors de la labellisation : {e}")
+            return False
+    else:
+        print("Étape 6 ignorée (désactivée dans les options).")
     
 
 
     print("\n" + "=" * 50)
     print("ÉTAPE 7 : Fusion finale LiDAR + GNSS + GT + label")
     print("=" * 50 + "\n")
-    try:
-        final_fusion_file = config.get("final_fusion_csv")
-        if labels_file and features_file and final_fusion_file:
-            process_final_label_fusion_from_files(
-                path_fused_features=features_file,
-                path_labels=labels_file,
-                output_csv=final_fusion_file,
-                verbose=True,
-            )
-            print(f"Fusion finale terminee : {final_fusion_file}")
-        else:
-            print("Chemins de sortie non configures, etape 7 ignoree.")
-    except Exception as e:
-        print(f"Erreur lors de la fusion finale : {e}")
-        traceback.print_exc()
-        return False
+    if run_step_7_final_fusion:
+        try:
+            final_fusion_file = config.get("final_fusion_csv")
+            if labels_file and features_file and final_fusion_file:
+                process_final_label_fusion_from_files(
+                    path_fused_features=features_file,
+                    path_labels=labels_file,
+                    output_csv=final_fusion_file,
+                    verbose=True,
+                )
+                print(f"Fusion finale terminee : {final_fusion_file}")
+            else:
+                print("Chemins de sortie non configures, etape 7 ignoree.")
+        except Exception as e:
+            print(f"Erreur lors de la fusion finale : {e}")
+            traceback.print_exc()
+            return False
+    else:
+        print("Étape 7 ignorée (désactivée dans les options).")
     
     print("\n" + "=" * 50)
     print("Pipeline de labelisation terminé avec succès !")

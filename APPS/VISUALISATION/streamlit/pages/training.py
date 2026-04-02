@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from utils import GT_DIR, PARAMS_ENTRAINEMENT, PYTHON_LABELISATION_INTERPRETER, get_dataset_path
+from utils import PARAMS_ENTRAINEMENT, PYTHON_LABELISATION_INTERPRETER, get_dataset_path, list_traj_ids
 
 
 APPS_ROOT = Path(__file__).resolve().parents[3]
@@ -22,9 +22,7 @@ TRAINING_SCRIPTS = {
 }
 
 def _list_trajets() -> list[str]:
-	if not GT_DIR.exists():
-		return []
-	return sorted([p.name for p in GT_DIR.iterdir() if p.is_dir()])
+	return list_traj_ids()
 
 
 def _build_artefacts_map(dataset_name: str) -> dict[str, Path]:
