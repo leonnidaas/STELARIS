@@ -336,6 +336,9 @@ def download_tiles(traj_tiles_dir, file_list, output_folder, max_workers=10, chu
     # Créer le dossier de sortie si nécessaire
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
+
+    if traj_tiles_dir is not None:
+        traj_tiles_dir = Path(traj_tiles_dir)
     
     # Lire la liste des URLs
     if not os.path.exists(file_list):
@@ -365,7 +368,8 @@ def download_tiles(traj_tiles_dir, file_list, output_folder, max_workers=10, chu
         print(f"Fichiers à télécharger ou vérifier : {len(urls_to_download)}")
     
     if not urls_to_download:
-        link_tiles_to_trajectory(traj_tiles_dir, all_urls, output_folder) # /!\ output_folder doit être le pool de tuiles, pas le dossier de la trajectoire
+        if traj_tiles_dir is not None:
+            link_tiles_to_trajectory(traj_tiles_dir, all_urls, Path(output_folder)) # /!\ output_folder doit être le pool de tuiles, pas le dossier de la trajectoire
         if verbose:
             print("Tous les fichiers sont déjà présents")
         return {"exist": len(all_urls), "done": 0, "fail": 0, "total_size_bytes": 0}
@@ -375,7 +379,8 @@ def download_tiles(traj_tiles_dir, file_list, output_folder, max_workers=10, chu
     rate_limiter = RateLimiter(rate_limit)
 
     if size_cache_file is None:
-        size_cache_file = os.path.join(traj_tiles_dir, f"remote_sizes_cache.json")
+        cache_base_dir = traj_tiles_dir if traj_tiles_dir is not None else Path(output_folder)
+        size_cache_file = str(cache_base_dir / "remote_sizes_cache.json")
 
     cache_preview = load_cached_size_map(urls_to_download, size_cache_file)
     cache_covers_all_urls = len(cache_preview) == len(urls_to_download)
@@ -466,7 +471,8 @@ def download_tiles(traj_tiles_dir, file_list, output_folder, max_workers=10, chu
     save_size_cache(size_cache_file, cache_data)
     
     # Creation des racoucis vers les tuiles dans le dossier de la trajectoire
-    link_tiles_to_trajectory(traj_tiles_dir, all_urls, output_folder) # /!\ output_folder doit être le pool de tuiles, pas le dossier de la trajectoire
+    if traj_tiles_dir is not None:
+        link_tiles_to_trajectory(traj_tiles_dir, all_urls, Path(output_folder)) # /!\ output_folder doit être le pool de tuiles, pas le dossier de la trajectoire
     
     # Afficher les statistiques
     if verbose:
@@ -485,16 +491,21 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Exemples d'utilisation :
-  %(prog)s -i urls.txt -o lidar_data/
-    %(prog)s -i urls.txt -o lidar_data/ --workers 1 --verify
-  %(prog)s -i urls.txt -o lidar_data/ --chunk-size 5M
+    %(prog)s -i urls.txt -o lidar_data/
+    %(prog)s -i urls_a.txt urls_b.txt -o lidar_data/
+    %(prog)s --input-dir listes_urls/ -o lidar_data/
+    %(prog)s -i urls.txt -o lidar_data/ --traj-tiles-dir dossier_trajet/tiles_laz
         """
     )
     
-    parser.add_argument('-i', '--input', required=True,
-                        help='Fichier contenant la liste des URLs (une par ligne)')
+    parser.add_argument('-i', '--input', nargs='+', default=None,
+                        help='Un ou plusieurs fichiers de listes d\'URLs (une URL par ligne)')
+    parser.add_argument('--input-dir', default=None,
+                        help='Dossier contenant plusieurs listes (glob: *.txt)')
     parser.add_argument('-o', '--output', required=True,
                         help='Dossier de destination pour les fichiers')
+    parser.add_argument('--traj-tiles-dir', default=None,
+                        help='Dossier de la trajectoire pour créer des liens symboliques (optionnel)')
     parser.add_argument('-w', '--workers', type=int, default=1,
                         help='Conservé pour compatibilité, mode simplifié forcé à 1')
     parser.add_argument('-c', '--chunk-size', default='10M',
@@ -513,6 +524,21 @@ Exemples d'utilisation :
                         help='Démarre immédiatement sans requêtes HEAD en amont (utilise seulement le cache existant)')
     
     args = parser.parse_args()
+
+    input_files = []
+    if args.input:
+        input_files.extend(args.input)
+    if args.input_dir:
+        input_dir = Path(args.input_dir).expanduser().resolve()
+        if not input_dir.exists() or not input_dir.is_dir():
+            raise FileNotFoundError(f"Dossier input-dir invalide: {input_dir}")
+        input_files.extend(str(p) for p in sorted(input_dir.glob("*.txt")))
+
+    if not input_files:
+        raise ValueError("Aucune liste fournie. Utilise --input ou --input-dir.")
+
+    # Déduplication en conservant l'ordre.
+    dedup_input_files = list(dict.fromkeys(input_files))
     
     # Parser la taille des chunks
     chunk_size_str = args.chunk_size.upper()
@@ -525,18 +551,42 @@ Exemples d'utilisation :
     
     # Lancer le téléchargement
     try:
-        download_tiles(
-            file_list=args.input,
-            output_folder=args.output,
-            max_workers=args.workers,
-            chunk_size=chunk_size,
-            verify_integrity=args.verify,
-            verbose=not args.quiet,
-            rate_limit=args.rate_limit,
-            size_cache_file=args.size_cache_file,
-            refresh_sizes=args.refresh_sizes,
-            prefetch_sizes=not args.no_prefetch_sizes,
-        )
+        aggregate = {
+            "exist": 0,
+            "done": 0,
+            "fail": 0,
+            "total_size_bytes": 0,
+            "exist_size_bytes": 0,
+            "done_size_bytes": 0,
+        }
+
+        for file_list in dedup_input_files:
+            if not args.quiet:
+                print(f"\n=== Liste: {file_list} ===")
+            stats = download_tiles(
+                traj_tiles_dir=args.traj_tiles_dir,
+                file_list=file_list,
+                output_folder=args.output,
+                max_workers=args.workers,
+                chunk_size=chunk_size,
+                verify_integrity=args.verify,
+                verbose=not args.quiet,
+                rate_limit=args.rate_limit,
+                size_cache_file=args.size_cache_file,
+                refresh_sizes=args.refresh_sizes,
+                prefetch_sizes=not args.no_prefetch_sizes,
+            )
+            for k in aggregate:
+                aggregate[k] += stats.get(k, 0)
+
+        if not args.quiet and len(dedup_input_files) > 1:
+            print("\n=== RÉSUMÉ GLOBAL ===")
+            print(f"Listes traitées : {len(dedup_input_files)}")
+            print(f"Fichiers déjà présents : {aggregate['exist']}")
+            print(f"Fichiers téléchargés : {aggregate['done']}")
+            print(f"Échecs : {aggregate['fail']}")
+            total_mb = (aggregate['exist_size_bytes'] + aggregate['done_size_bytes']) / (1024**2)
+            print(f"Total disponible/téléchargé : {total_mb:.0f} Mo")
     except (FileNotFoundError, ValueError) as e:
         print(f"ERREUR : {e}")
         sys.exit(1)

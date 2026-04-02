@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+from flask import json
 import pyproj
 from dotenv import load_dotenv
 import yaml
@@ -109,9 +110,20 @@ def parse_lever_arm(file_path):
         with open(file_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
         return (config["GNSS_BOGIE_X"], config["GNSS_BOGIE_Y"], config["GNSS_BOGIE_Z"])
-    except Exception as e:
-        print(f"Erreur lors de la lecture des metadonnees de bras de levier : {e}")
-        return (0.0, 0.0, 0.0)
+    except FileNotFoundError:
+        print(f"Fichier de bras de levier non trouvé : {file_path}")
+        json.dump({
+            "GNSS_BOGIE_X": 11.45375,
+            "GNSS_BOGIE_Y": 0.598,
+            "GNSS_BOGIE_Z": -4.137
+        }, open(file_path, "w"), indent=4)
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+            return (config["GNSS_BOGIE_X"], config["GNSS_BOGIE_Y"], config["GNSS_BOGIE_Z"])
+        except Exception as e:
+            print(f"Erreur lors de la lecture des metadonnees de bras de levier : {e}")
+            return (11.45375, 0.598, -4.137)
 
 
 def get_traj_paths(traj_id: str):
