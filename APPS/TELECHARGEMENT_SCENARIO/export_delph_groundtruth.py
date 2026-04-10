@@ -3,13 +3,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
+from tqdm import tqdm
 import sys
-
-APPS_DIR = Path(__file__).resolve().parents[1]
-if str(APPS_DIR) not in sys.path:
-    sys.path.insert(0, str(APPS_DIR))
-
 from utils import GT_DIR, iter_scenario_dirs
 
 
@@ -60,14 +55,16 @@ def load_scenario_delph(scenario_dir: Path) -> pd.DataFrame:
     def to_millis(df: pd.DataFrame) -> pd.Series:
         dt_str = df["date"] + " " + df["time"]
         return pd.to_datetime(dt_str, format="%Y/%m/%d %H:%M:%S.%f").astype("int64") // 10**6
-
+    
+    df_nav["time_utc"] = pd.to_datetime(df_nav["date"] + " " + df_nav["time"], format="%Y/%m/%d %H:%M:%S.%f", utc=True)
+    df_speed["time_utc"] = pd.to_datetime(df_speed["date"] + " " + df_speed["time"], format="%Y/%m/%d %H:%M:%S.%f", utc=True)
     df_nav["gps_millis"] = to_millis(df_nav)
     df_speed["gps_millis"] = to_millis(df_speed)
 
     df = pd.merge(
         df_nav,
-        df_speed[["gps_millis", "speedForward"]],
-        on="gps_millis",
+        df_speed[["time_utc", "speedForward"]],
+        on="time_utc",
         how="inner",
     )
 
@@ -83,11 +80,11 @@ def load_scenario_delph(scenario_dir: Path) -> pd.DataFrame:
         )
     )
     df["distance_trip"] = np.concatenate(([0], np.cumsum(distances)))
-
+    df.drop(columns=["date", "time", "userData"], inplace=True)
     return df
 
 
-def export_if_missing_csv(scenario_dir: Path, dry_run: bool) -> str:
+def export_if_missing_csv(scenario_dir: Path, dry_run: bool, recompute: bool) -> str:
     """Export Delph CSV only when CSV is missing and txt inputs are available."""
     if not scenario_dir.is_dir():
         return "SKIP_NOT_DIR"
@@ -100,8 +97,9 @@ def export_if_missing_csv(scenario_dir: Path, dry_run: bool) -> str:
 
     output_csv = scenario_dir / f"{scenario_dir.name}_GroundTruth_Delph.csv"
     if output_csv.exists():
-        return "SKIP_EXISTS"
-
+        if not recompute:
+            return "SKIP_EXISTS"
+        
     if dry_run:
         print(f"[DRY-RUN] {scenario_dir} -> {output_csv}")
         return "DRY_EXPORT"
@@ -112,7 +110,7 @@ def export_if_missing_csv(scenario_dir: Path, dry_run: bool) -> str:
     return "EXPORT"
 
 
-def scan_groundtruth_folders(root: Path, dry_run: bool, recursive: bool) -> None:
+def scan_groundtruth_folders(root: Path, dry_run: bool, recursive: bool, recompute: bool) -> None:
     if recursive:
         candidates = sorted([p for p in root.rglob("*") if p.is_dir()])
     else:
@@ -132,9 +130,9 @@ def scan_groundtruth_folders(root: Path, dry_run: bool, recursive: bool) -> None
         "WARN": 0,
     }
 
-    for scenario_dir in candidates:
+    for scenario_dir in tqdm(candidates, desc="Scanning scenarios"):
         try:
-            status = export_if_missing_csv(scenario_dir, dry_run=dry_run)
+            status = export_if_missing_csv(scenario_dir, dry_run=dry_run, recompute=recompute)
         except Exception as exc:
             status = "WARN"
             print(f"[WARN] {scenario_dir}: {exc}")
@@ -171,14 +169,18 @@ def main() -> None:
         action="store_true",
         help="Scan nested directories recursively (deeper than LINE/SCENARIO)",
     )
-
+    parser.add_argument(
+        "--recompute",
+        action="store_true",
+        help="Recompute and overwrite existing CSV files",
+    )
     args = parser.parse_args()
     gt_root = Path(args.groundtruth_dir).expanduser().resolve()
 
     if not gt_root.exists() or not gt_root.is_dir():
         raise SystemExit(f"Invalid groundtruth directory: {gt_root}")
 
-    scan_groundtruth_folders(gt_root, dry_run=args.dry_run, recursive=args.recursive)
+    scan_groundtruth_folders(gt_root, dry_run=args.dry_run, recursive=args.recursive, recompute=args.recompute)
 
 
 if __name__ == "__main__":

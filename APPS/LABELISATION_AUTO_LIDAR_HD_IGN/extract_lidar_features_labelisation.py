@@ -12,20 +12,31 @@ from utils import DECIMATION_FACTOR, N_WORKERS, RAYON_RECHERCHE, get_traj_paths
 
 
 SKY_MASK_IGNORED_CLASSES = np.array([0, 1, 64, 66, 67], dtype=np.int64)
+AZIMUTH_BINS = 36
+CANOPEE_MIN_Z_REL = 2.0
+MIN_POINTS_FOR_STABLE_FEATURES = 20
 
 
-def compute_sky_mask_deg_from_relative(z_rel, dist_h, c_pts, min_dist_h=0.8, ignored_classes=SKY_MASK_IGNORED_CLASSES):
-    """Calcule l'angle de sky mask (deg) a partir de coordonnees relatives a l'antenne."""
-    z_rel = np.asarray(z_rel, dtype=float)
-    dist_h = np.asarray(dist_h, dtype=float)
-    c_pts = np.asarray(c_pts)
+def compute_sky_mask_deg_from_relative(z_relative, dist_horizontale, points_classes, min_dist_horizontale=0.8, ignored_classes=SKY_MASK_IGNORED_CLASSES):
+    """Calcule l'angle de sky mask (deg) a partir de coordonnees relatives a l'antenne.
+    args:
+        z_relative: array des hauteurs relatives des points par rapport a l'antenne (z_pts - z_ant + gnss_offset_z).
+        dist_horizontale: array des distances horizontales des points par rapport a la position GT (sqrt((x_pts - x_gt)^2 + (y_pts - y_gt)^2)).
+        points_classes: array des classes des points LiDAR.
+        min_dist_horizontale: distance horizontale minimale pour considerer un point dans le calcul du sky mask.
+        ignored_classes: classes de points a ignorer dans le calcul du sky mask (ex: sol, eau, etc.).
+    retourne:
+        sky_mask_deg: angle en degres representant la portion de ciel visible (0 = completement masque, 90 = ciel totalement visible)."""
+    z_relative = np.asarray(z_relative, dtype=float)
+    dist_horizontale = np.asarray(dist_horizontale, dtype=float)
+    points_classes = np.asarray(points_classes)
     ignored_classes = np.asarray(ignored_classes, dtype=np.int64)
 
-    valid = (z_rel > 0.0) & (dist_h > float(min_dist_h)) & (~np.isin(c_pts.astype(np.int64), ignored_classes))
+    valid = (z_relative > 0.0) & (dist_horizontale > float(min_dist_horizontale)) & (~np.isin(points_classes.astype(np.int64), ignored_classes))
     if not np.any(valid):
         return 0.0
 
-    angles = np.degrees(np.arctan2(z_rel[valid], np.maximum(dist_h[valid], 1e-6)))
+    angles = np.degrees(np.arctan2(z_relative[valid], np.maximum(dist_horizontale[valid], 1e-6)))
     return float(np.percentile(angles, 98))
 
 
@@ -69,6 +80,27 @@ def _empty_feature(signal_denied=0):
         "obs_type": 0,
         "is_under_structure": 0,
         "veg_density": 0,
+        "n_points_zone": 0,
+        "enough_points_flag": 0,
+        "density_near_0_5m": 0.0,
+        "density_mid_5_15m": 0.0,
+        "density_far_15_30m": 0.0,
+        "zrel_p50": 0.0,
+        "zrel_p90": 0.0,
+        "zrel_p95": 0.0,
+        "zrel_p99": 0.0,
+        "zrel_iqr": 0.0,
+        "zrel_std": 0.0,
+        "occupation_ciel_azimuth_ratio": 0.0,
+        "building_density": 0.0,
+        "vegetation_density_low": 0.0,
+        "vegetation_density_mid": 0.0,
+        "vegetation_density_high": 0.0,
+        "bridge_density": 0.0,
+        "bridge_above_density": 0.0,
+        "bridge_above_count": 0,
+        "canopee_ratio": 0.0,
+        "obstacle_overhead_ratio": 0.0,
         "signal_denied": int(signal_denied),
     }
 
@@ -97,6 +129,34 @@ def _compute_obs_type(is_build, is_veg, is_bridge):
     if is_bridge:
         return 4
     return 0
+
+
+def _safe_ratio(mask, denom):
+    if denom <= 0:
+        return 0.0
+    return float(np.sum(mask)) / float(denom)
+
+
+def _safe_percentile(values, q):
+    if values.size == 0:
+        return 0.0
+    return float(np.percentile(values, q))
+
+
+def _compute_azimuth_occupancy_ratio(dx, dy, valid_mask, bins=AZIMUTH_BINS):
+    if dx.size == 0 or bins <= 0:
+        return 0.0
+
+    m = np.asarray(valid_mask, dtype=bool)
+    if not np.any(m):
+        return 0.0
+
+    az = np.arctan2(dy[m], dx[m])
+    az = np.mod(az, 2.0 * np.pi)
+    edges = np.linspace(0.0, 2.0 * np.pi, int(bins) + 1)
+    counts, _ = np.histogram(az, bins=edges)
+    occupied_bins = np.sum(counts > 0)
+    return float(occupied_bins) / float(bins)
 
 
 def _read_tile_points_bbox_filtered(
@@ -156,34 +216,78 @@ def _read_tile_points_bbox_filtered(
     )
 
 
-def _compute_point_features(row, x_pts, y_pts, z_pts, c_pts, gnss_offset_z=0.0):
-    # Repere antenne: meme convention que la visualisation (decalage ajoute a z_rel).
+def _compute_point_features(row, x_pts, y_pts, z_pts, points_classes, gnss_offset_z=0.0):
+    # Repere antenne: meme convention que la visualisation (decalage ajoute a z_relative).
     z_ant = float(row["z_gt_ign69"])
     gt_x = float(row["x_gt"])
     gt_y = float(row["y_gt"])
 
-    dist_h = np.sqrt((x_pts - gt_x) ** 2 + (y_pts - gt_y) ** 2)
-    dist_h = np.maximum(dist_h, 0.1)
-    z_rel = z_pts - z_ant + float(gnss_offset_z)
+    dx = x_pts - gt_x
+    dy = y_pts - gt_y
+    dist_horizontale = np.sqrt(dx ** 2 + dy ** 2) # Distance horizontale des points par rapport a la position GT.
+    dist_horizontale = np.maximum(dist_horizontale, 0.1)
+    z_relative = z_pts - z_ant + float(gnss_offset_z)
+    n_points = int(points_classes.size)
 
-    above = (z_rel > 0.0) & (dist_h > 0.8) & ~np.isin(c_pts.astype(np.int64), SKY_MASK_IGNORED_CLASSES)
+    above = (z_relative > 0.0) & (dist_horizontale > 0.8) & ~np.isin(points_classes.astype(np.int64), SKY_MASK_IGNORED_CLASSES)
+    not_ignored = ~np.isin(points_classes.astype(np.int64), SKY_MASK_IGNORED_CLASSES)
 
-    sky_mask = compute_sky_mask_deg_from_relative(z_rel, dist_h, c_pts)
+    sky_mask = compute_sky_mask_deg_from_relative(z_relative, dist_horizontale, points_classes)
 
-    is_build = 6 in c_pts[above] if np.any(above) else False
-    is_veg = np.any(np.isin(c_pts[above], [3, 4, 5])) if np.any(above) else False
-    is_bridge = 17 in c_pts[above] if np.any(above) else False
-    under = int(np.any((dist_h < 2.0) & (z_pts > z_ant) & (~np.isin(c_pts, [0, 1]))))
+    is_build = 6 in points_classes[above] if np.any(above) else False
+    is_veg = np.any(np.isin(points_classes[above], [3, 4, 5])) if np.any(above) else False
+    is_bridge = 17 in points_classes[above] if np.any(above) else False
+    under = int(np.any((dist_horizontale < 2.0) & (z_pts > z_ant) & (~np.isin(points_classes, [0, 1]))))
 
     signal_denied = int(
         np.isnan(row["longitude_gnss"]) or np.isnan(row["latitude_gnss"]) or np.isnan(row["altitude_gnss"])
     )
 
+    radial_near = dist_horizontale <= 5.0
+    radial_mid = (dist_horizontale > 5.0) & (dist_horizontale <= 15.0)
+    radial_far = (dist_horizontale > 15.0) & (dist_horizontale <= 30.0)
+
+    z_p25 = _safe_percentile(z_relative, 25)
+    z_p75 = _safe_percentile(z_relative, 75)
+    z_std = float(np.std(z_relative)) if z_relative.size else 0.0
+
+    occupation_ciel = _compute_azimuth_occupancy_ratio(dx, dy, above, bins=AZIMUTH_BINS)
+
+    is_veg_low = points_classes == 3
+    is_veg_mid = points_classes == 4
+    is_veg_high = points_classes == 5
+    is_veg_any = np.isin(points_classes, [3, 4, 5])
+    bridge_above_mask = (points_classes == 17) & (z_relative > 0.0) & (dist_horizontale > 0.8)
+
+    canopee_mask = is_veg_any & (z_relative > float(CANOPEE_MIN_Z_REL))
+    overhead_mask = not_ignored & (z_relative > 0.0) & (dist_horizontale < 5.0)
+
     return {
         "sky_mask_deg": round(sky_mask, 2),
         "obs_type": _compute_obs_type(is_build, is_veg, is_bridge),
         "is_under_structure": under,
-        "veg_density": round(np.mean(np.isin(c_pts, [3, 4, 5])), 3),
+        "veg_density": round(np.mean(np.isin(points_classes, [3, 4, 5])), 3),
+        "n_points_zone": n_points,
+        "enough_points_flag": int(n_points >= MIN_POINTS_FOR_STABLE_FEATURES),
+        "density_near_0_5m": round(_safe_ratio(radial_near, n_points), 3),
+        "density_mid_5_15m": round(_safe_ratio(radial_mid, n_points), 3),
+        "density_far_15_30m": round(_safe_ratio(radial_far, n_points), 3),
+        "zrel_p50": round(_safe_percentile(z_relative, 50), 3),
+        "zrel_p90": round(_safe_percentile(z_relative, 90), 3),
+        "zrel_p95": round(_safe_percentile(z_relative, 95), 3),
+        "zrel_p99": round(_safe_percentile(z_relative, 99), 3),
+        "zrel_iqr": round(z_p75 - z_p25, 3),
+        "zrel_std": round(z_std, 3),
+        "occupation_ciel_azimuth_ratio": round(occupation_ciel, 3),
+        "building_density": round(_safe_ratio(points_classes == 6, n_points), 3),
+        "vegetation_density_low": round(_safe_ratio(is_veg_low, n_points), 3),
+        "vegetation_density_mid": round(_safe_ratio(is_veg_mid, n_points), 3),
+        "vegetation_density_high": round(_safe_ratio(is_veg_high, n_points), 3),
+        "bridge_density": round(_safe_ratio(points_classes == 17, n_points), 3),
+        "bridge_above_density": round(_safe_ratio(bridge_above_mask, n_points), 3),
+        "bridge_above_count": int(np.sum(bridge_above_mask)),
+        "canopee_ratio": round(_safe_ratio(canopee_mask, n_points), 3),
+        "obstacle_overhead_ratio": round(_safe_ratio(overhead_mask, n_points), 3),
         "signal_denied": signal_denied,
     }
 
@@ -253,7 +357,7 @@ def process_single_tile_labelisation(
                 x_pts = l_x[indices]
                 y_pts = l_y[indices]
                 z_pts = l_z[indices]
-                c_pts = l_c[indices]
+                points_classes = l_c[indices]
 
                 if spatial_mode == "corridor":
                     in_corridor = _corridor_filter(
@@ -272,7 +376,7 @@ def process_single_tile_labelisation(
                     x_pts = x_pts[in_corridor]
                     y_pts = y_pts[in_corridor]
                     z_pts = z_pts[in_corridor]
-                    c_pts = c_pts[in_corridor]
+                    points_classes = points_classes[in_corridor]
 
                 features.append(
                     _compute_point_features(
@@ -280,7 +384,7 @@ def process_single_tile_labelisation(
                         x_pts,
                         y_pts,
                         z_pts,
-                        c_pts,
+                        points_classes,
                         gnss_offset_z=gnss_offset_z,
                     )
                 )

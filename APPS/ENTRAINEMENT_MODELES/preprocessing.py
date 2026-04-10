@@ -96,58 +96,41 @@ def _downsample_stationary_rows(
     return out
 
 
-def assign_geographic_segments(
-    df: pd.DataFrame,
-    segment_length_m: float = 2000.0,
-    last_segment_min_length_m: float = 500.0,
-) -> pd.DataFrame:
-    """Assign a unique segment_id per row, trajectory by trajectory.
-
-    Segment id format: <TRAJET>_SEG_<N>
+def assign_geographic_segments(df: pd.DataFrame, grid_size_km: float = 5.0) -> pd.DataFrame:
     """
-    if "__trajet_id" not in df.columns:
-        raise ValueError("Colonne interne '__trajet_id' manquante pour la segmentation.")
-
+    Assigne un segment_id basé sur une grille géographique absolue modulable.
+    
+    Args:
+        df: Le dataframe contenant 'latitude' et 'longitude'.
+        grid_size_km: La taille désirée du côté d'un segment de grille (en kilomètres).
+    """
     df = df.copy()
+    
+    if "latitude_gt" not in df.columns or "longitude_gt" not in df.columns:
+        raise ValueError("Les colonnes 'latitude_gt' et 'longitude_gt' sont requises.")
 
-    # Stable ordering by trajectory then time where available.
-    if "gps_millis" in df.columns:
-        df = df.sort_values(["__trajet_id", "gps_millis"], kind="stable").reset_index(drop=True)
-    else:
-        df = df.sort_values(["__trajet_id"], kind="stable").reset_index(drop=True)
-
-    if "distance_trip" not in df.columns:
-        raise ValueError(
-            "Impossible de segmenter: colonne de distance cumulée introuvable. "
-            "Attendu en priorité: 'distance_trip'."
-        )
-
-    segment_ids = np.empty(len(df), dtype=object)
-
-    for traj_id, idx in df.groupby("__trajet_id", sort=False).groups.items():
-        idx = np.array(idx)
-        sub = df.iloc[idx]
-
-        dist = pd.to_numeric(sub["distance_trip"], errors="coerce").values.astype(np.float64)
-        if np.all(np.isnan(dist)):
-            raise ValueError(
-                "Impossible de segmenter: la colonne 'distance_trip' est entièrement invalide (NaN)."
-            )
-        valid0 = np.nanmin(dist)
-        dist = np.where(np.isnan(dist), valid0, dist)
-        cum_dist = dist - dist[0]
-
-        seg_index = np.floor(cum_dist / max(segment_length_m, 1.0)).astype(int) + 1
-        n_seg = int(seg_index.max())
-        if n_seg >= 2:
-            tail_len = float(np.nanmax(cum_dist) - (n_seg - 1) * max(segment_length_m, 1.0))
-            if tail_len < float(last_segment_min_length_m):
-                seg_index[seg_index == n_seg] = n_seg - 1
-
-        width = max(2, len(str(int(np.max(seg_index)))))
-        segment_ids[idx] = [f"{traj_id}_SEG_{int(s):0{width}d}" for s in seg_index]
-
-    df["segment_id"] = segment_ids
+    # Conversion de la distance souhaitée en degrés (Approximation terrestre standard)
+    # 1 degré de latitude = ~111.32 km partout sur Terre.
+    # 1 degré de longitude = ~111.32 km à l'équateur, mais se réduit avec la latitude.
+    # Pour la France (lat ~46°), le cosinus de 46° est d'environ 0.69.
+    
+    deg_lat_step = grid_size_km / 111.32
+    
+    # On calcule un facteur de longitude moyen sur le dataset pour garder des blocs carrés
+    mean_lat = np.nanmean(df["latitude_gt"].values)
+    deg_lon_step = grid_size_km / (111.32 * np.cos(np.radians(mean_lat)))
+    
+    # Discrétisation par division euclidienne (floor)
+    lat_bins = np.floor(df["latitude_gt"].values / deg_lat_step) * deg_lat_step
+    lon_bins = np.floor(df["longitude_gt"].values / deg_lon_step) * deg_lon_step
+    
+    # Création de l'ID de grille universel
+    # On formate à 4 décimales pour éviter les problèmes de précision flottante dans les strings
+    df["segment_id"] = [
+        f"GEO_GRID_{lat:.4f}_{lon:.4f}" 
+        for lat, lon in zip(lat_bins, lon_bins)
+    ]
+    
     return df
 
 
@@ -198,6 +181,7 @@ def get_data(traj_id_list: list[str]) -> pd.DataFrame:
         if not data_file.exists():
             raise FileNotFoundError(f"Fichier de features introuvable: {data_file}")
         df_i = pd.read_csv(data_file)
+        
         df_i["__trajet_id"] = traj_id
         df_features = pd.concat([df_features, df_i], ignore_index=True)
     return df_features
@@ -395,8 +379,6 @@ def main(
     print("\n[3/8] Geographic segmentation ...")
     df_features = assign_geographic_segments(
         df_features,
-        segment_length_m=segment_length_m,
-        last_segment_min_length_m=last_segment_min_length_m,
     )
 
     safe_feature_names, dropped_coords = _sanitize_feature_names(feature_names)
@@ -415,7 +397,8 @@ def main(
         raise ValueError("Colonne 'gps_millis' manquante dans le dataset.")
 
     print("\n[4/8] Filtering, encoding and sequence build ...")
-    
+    df_features = df_features[df_features["label"] != "mixed"]
+
     x = df_features[safe_feature_names].values
     y_label = df_features["label"].values
     t = pd.to_numeric(df_features["gps_millis"], errors="coerce").values * 1e-3
@@ -444,7 +427,7 @@ def main(
 
     total_rows_after_filters = int(np.sum(mask_finite))
     total_rows_after_stride = int(len(x))
-
+    
     le = LabelEncoder().fit(y_label) # On encode les labels avant de faire les splits pour garantir la cohérence des classes dans les splits et le calcul des class weights, même si certaines classes sont absentes de certains splits.
     y = le.transform(y_label)
 

@@ -82,10 +82,13 @@ def conversion_ign69(lats: np.ndarray, lons: np.ndarray, alts_wgs84: np.ndarray)
         x, y, z_ign69 = transformer.transform(lons, lats, alts_wgs84)
 
         if np.isinf(x[0]):
+            print("Erreur de conversion IGN69 : les coordonnees converties sont infinies. Verifiez que le fichier .tif de geoid est accessible par PROJ.")
             return None, None, None
 
         return x, y, z_ign69
-    except Exception:
+    except Exception as e:
+        print(f"toto {lons, lats, alts_wgs84}")
+        print(f"Erreur lors de la conversion IGN69 : {e}")
         return None, None, None
 
 
@@ -165,8 +168,9 @@ def process_gnss_gt_fusion(
     if verbose:
         print("Etape 4 : Conversion WGS84 -> Lambert 93 / IGN69...")
 
-    matched_df["altitude_gt"] = -matched_df["altitude_gt"]
-
+    if matched_df["altitude_gt"].min() < 0:
+        matched_df["altitude_gt"] = -matched_df["altitude_gt"]
+    
     x, y, z = conversion_ign69(
         matched_df["latitude_gt"].values,
         matched_df["longitude_gt"].values,

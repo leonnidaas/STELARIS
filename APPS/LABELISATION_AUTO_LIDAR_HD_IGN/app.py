@@ -9,7 +9,7 @@ import traceback
 import argparse
 import json
 import pandas as pd
-from utils import CHUNK_SIZE, get_traj_paths, standardize_dataframe, WFS_URL, LIDAR_LAYER, WFS_VERSION, RAYON_RECHERCHE, N_WORKERS, DECIMATION_FACTOR, PARAMS_LABELISATION, LIDAR_DIR
+from utils import CHUNK_SIZE, get_traj_paths, standardize_dataframe, WFS_URL, LIDAR_LAYER, WFS_VERSION, RAYON_RECHERCHE, N_WORKERS, DECIMATION_FACTOR, PARAMS_LABELISATION, LIDAR_DIR, merge_labelisation_params
 from LABELISATION_AUTO_LIDAR_HD_IGN.telechargement_tuilles_lidar import download_tiles
 from LABELISATION_AUTO_LIDAR_HD_IGN.choix_des_tuiles_lidar import download_tile_url_list
 from LABELISATION_AUTO_LIDAR_HD_IGN.extract_lidar_features_labelisation import process_lidar_tiles_for_labelisation
@@ -40,6 +40,7 @@ def _resolve_pipeline_options(options=None, **overrides):
         "run_step_5_fusion_features": True,
         "run_step_6_labelisation": True,
         "run_step_7_final_fusion": True,
+        "params_labelisation": dict(PARAMS_LABELISATION),
     }
     if isinstance(options, dict):
         resolved.update(options)
@@ -107,6 +108,8 @@ def pipeline_labelisation(
     run_step_5_fusion_features = bool(opts.get("run_step_5_fusion_features", True))
     run_step_6_labelisation = bool(opts.get("run_step_6_labelisation", True))
     run_step_7_final_fusion = bool(opts.get("run_step_7_final_fusion", True))
+    params_labelisation = merge_labelisation_params(opts.get("params_labelisation"))
+    opts["params_labelisation"] = params_labelisation
 
     if verbose:
         print(f"--- Pipeline de labelisation pour : {traj_id} ---")
@@ -122,7 +125,7 @@ def pipeline_labelisation(
             config=config,
             traj_id=traj_id,
             pipeline_opts=opts,
-            params_labelisation=PARAMS_LABELISATION,
+            params_labelisation=params_labelisation,
             decimation_factor=DECIMATION_FACTOR,
         )
         print(f"Parametres run sauvegardes: {run_params_file}")
@@ -237,7 +240,7 @@ def pipeline_labelisation(
 
     if run_step_4_extract_lidar:
         gnss_offset_z = config.get("gnss_offset", (0.0, 0.0, 0.0))[2] if config.get("gnss_offset") else None
-        if extract_features | (not extract_features | os.path.exists(config["features_csv"])):
+        if extract_features or (not os.path.exists(config["features_csv"])):
             # On recalcule les features si le fichier n'existe pas ou si l'extraction est demandée
             print("Extraction des features, fichier non présent ou extraction demandée : ", config["features_csv"])
             try:
@@ -318,7 +321,7 @@ def pipeline_labelisation(
 
             process_labelling(
                 input_csv=str(features_file),
-                params=PARAMS_LABELISATION,
+                params=params_labelisation,
                 output_csv_final=str(labels_file),
                 output_csv_interim=str(labels_features_file) if labels_features_file else None,
                 verbose=True

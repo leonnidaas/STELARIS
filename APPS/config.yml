@@ -23,6 +23,8 @@ lidar_dir_relpath: IGN/TUILES_LIDAR_HD
 models_dir: MODELS
 
 
+logo_path: DOCUMENTATION/media/logo_ongletstppp.png
+
 long_col: longitude
 lat_col: latitude
 
@@ -32,7 +34,7 @@ lidar_layer: IGNF_NUAGES-DE-POINTS-LIDAR-HD:dalle
 
 
 rayon_recherche: 20.0
-n_workers: 5
+n_workers: 8
 decimation_factor: 1
 
 python_rinex_interpreter: python
@@ -43,10 +45,40 @@ chunk_size: 1048576
 
 # -----LABELISATION-----
 params_labelisation:
-  seuil_vegetation: 0.3 # A ajuster en fonction de la densité de la végétation et des caractéristiques du lidar
-  seuil_melange: 0.2
-  seuil_ciel_ouvert: 30.0 # En degrés à partir de la normale de l'antenne
-  distance_scan: 5 # Distance maximale pour considérer un point comme voisin dans la classification (en mètres)
+  seuil_vegetation: 0.35
+  seuil_melange: 0.20
+  seuil_ciel_ouvert: 24.0
+  distance_scan: 5
+  seuil_occupation_ciel: 0.12
+  seuil_overhead_bridge: 0.06
+  seuil_overhead_gare: 0.12
+  seuil_veg_high: 0.50
+  seuil_canopee: 0.10
+  seuil_building_density: 0.08
+  seuil_mixed_building: 0.06
+  seuil_mixed_veg: 0.18
+  seuil_min_points_zone: 20
+  seuil_vitesse_gare_mps: 6.0
+  seuil_bridge_density_min: 0.015
+  seuil_bridge_above_density_min: 0.001
+  seuil_bridge_above_count_min: 0
+  seuil_bridge_zrel_p95_min: 2.2
+  seuil_bridge_zrel_p99_min: 3.5
+  bridge_min_score: 1
+  bridge_persistence_window_s: 1.0
+  seuil_gare_density_near: 0.22
+  seuil_gare_zrel_iqr: 1.2
+  seuil_tree_veg_mid: 0.20
+  seuil_tree_zrel_p90: 2.5
+  seuil_build_density_mid: 0.30
+  seuil_build_zrel_p95: 2.2
+  seuil_open_sky_density_near_max: 0.16
+  seuil_open_sky_density_far_max: 0.35
+  seuil_open_sky_zrel_p95_max: 2.2
+  seuil_open_sky_zrel_std_max: 1.6
+  seuil_open_sky_soft_score: 4
+  seuil_mixed_zrel_iqr: 1.6
+  seuil_mixed_zrel_std: 1.4
 
 
 #-----ENTRAINEMENT MODELES-----
@@ -89,6 +121,7 @@ column_mapping:
     - z_coord
     - "altitude[m]"
     - "height[m]"
+    - "ellipsoidHeight"
   velocity:
     - velocity
     - speed

@@ -636,20 +636,24 @@ def find_sv_states_perso(gps_millis, ephem, verbose=False):
     return sv_posvel
 
 
-def extract_meas_and_nav(measurement_df, navigation_df, t):
+def extract_meas_and_nav(measurement_df, nav_millis, nav_idx_by_sat, t):
     l_local_meas = []
-    l_local_nav = []
-    diff = np.abs(navigation_df['gps_millis'] - t)
-    indices = np.arange(len(navigation_df))
-    for i, sat in enumerate(measurement_df['gnss_sv_id']):
-        index = navigation_df['gnss_sv_id'] == sat
-        list_index = indices[index]
-        if len(list_index) > 0:
-            min = list_index[np.argmin(diff[index])]
-            l_local_meas.append(i)
-            l_local_nav.append(min)
-        else:
-            pass
+    l_local_nav  = []
+
+    sats = measurement_df['gnss_sv_id'].values  # array numpy, pas de Series
+
+    for i, sat in enumerate(sats):
+        if sat not in nav_idx_by_sat:
+            continue  # satellite sans éphéméride connue
+
+        sat_nav_indices = nav_idx_by_sat[sat]              # indices pré-filtrés
+        diffs = np.abs(nav_millis[sat_nav_indices] - t)    # comparaison vectorisée
+        best_local = np.argmin(diffs)                       # index dans sat_nav_indices
+        best_global = sat_nav_indices[best_local]           # index dans nav_df
+
+        l_local_meas.append(i)
+        l_local_nav.append(best_global)
+
     return l_local_meas, l_local_nav
 
 logger.info("Compilating function residue_vect")
@@ -728,21 +732,34 @@ def process_gnss_estim(obs_df, constellations, nav_df, iono_params):
     
     i = 0
     
-    list_t = list(set(obs_df['gps_millis']))
-    list_t.sort()
-    
+    # list_t = list(set(obs_df['gps_millis']))
+    # list_t.sort()*
+    obs_grouped = dict(tuple(obs_df.groupby('gps_millis', sort=True)))
+    list_t = list(obs_grouped.keys())
+    nav_millis    = nav_df['gps_millis'].values
+    nav_sv_ids    = nav_df['gnss_sv_id'].values
+    nav_idx_by_sat = {}
+    for sat in np.unique(nav_sv_ids):
+        nav_idx_by_sat[sat] = np.where(nav_sv_ids == sat)[0]
     pbar = tqdm(total=len(list_t))
     
     for t in list_t:
     
-        measure_frame_df = obs_df[obs_df['gps_millis'] == t]
-        measure_frame_df = measure_frame_df[np.isin(measure_frame_df['gnss_id'], constellations)]
-        l_local_meas, l_local_nav = extract_meas_and_nav(measure_frame_df, nav_df, t)
+        measure_frame_df = obs_grouped[t]
+        measure_frame_df = measure_frame_df[
+            np.isin(measure_frame_df['gnss_id'], constellations)
+        ]
+
+        # Opt ② : appel à la version rapide
+        l_local_meas, l_local_nav = extract_meas_and_nav(
+            measure_frame_df, nav_millis, nav_idx_by_sat, t
+        )
+
         measure_frame_df = measure_frame_df.iloc[l_local_meas]
-        ephem_df = nav_df.iloc[l_local_nav]
-        ephem = NavData(pandas_df=ephem_df)
-        measure_frame = NavData(pandas_df=measure_frame_df)
-        
+        ephem_df         = nav_df.iloc[l_local_nav]
+        ephem            = NavData(pandas_df=ephem_df)
+        measure_frame    = NavData(pandas_df=measure_frame_df)
+
         pbar.update(1)
         
         # Sort the satellites

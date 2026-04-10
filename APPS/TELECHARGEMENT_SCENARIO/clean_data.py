@@ -1,3 +1,6 @@
+"""Ce script explore de manière récursive un dossier source à la recherche de fichiers de type obs, nav, groundtruth et speed.
+"""
+
 import argparse
 import os
 import shutil

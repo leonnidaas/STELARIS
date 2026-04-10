@@ -20,6 +20,7 @@ def _get_cfg(key, default=None):
 
 ROOT_PATH = Path(os.getenv("ROOT_PATH", _get_cfg("root_path", Path(__file__).parent.parent)))
 
+LOGO_PATH = ROOT_PATH /Path(_get_cfg("logo_path", "DOCUMENTATION/media/logo_onglet_2.png"))
 DATA_DIR = ROOT_PATH / _get_cfg("data_dir", "DATA")
 RAW_DIR = DATA_DIR / _get_cfg("raw_dir", "00_RAW")
 INTERIM_DIR = DATA_DIR / _get_cfg("interim_dir", "01_INTERIM")
@@ -67,11 +68,52 @@ PYTHON_LABELISATION_INTERPRETER = os.getenv(
 
 CHUNK_SIZE = int(_get_cfg("chunk_size", 1048576))
 
-PARAMS_LABELISATION = _get_cfg("params_labelisation")
-if not isinstance(PARAMS_LABELISATION, dict):
-    raise ValueError(
-        "params_labelisation doit etre defini comme un dictionnaire dans config.yml"
-    )
+DEFAULT_PARAMS_LABELISATION = {
+    "seuil_vegetation": 0.35,
+    "seuil_melange": 0.20,
+    "seuil_ciel_ouvert": 24.0,
+    "distance_scan": 5,
+    "seuil_occupation_ciel": 0.12,
+    "seuil_overhead_bridge": 0.06,
+    "seuil_overhead_gare": 0.12,
+    "seuil_veg_high": 0.50,
+    "seuil_canopee": 0.10,
+    "seuil_building_density": 0.08,
+    "seuil_mixed_building": 0.06,
+    "seuil_mixed_veg": 0.18,
+    "seuil_min_points_zone": 20,
+    "seuil_vitesse_gare_mps": 6.0,
+    "seuil_bridge_density_min": 0.015,
+    "seuil_bridge_above_density_min": 0.001,
+    "seuil_bridge_above_count_min": 0,
+    "seuil_bridge_zrel_p95_min": 2.2,
+    "seuil_bridge_zrel_p99_min": 3.5,
+    "bridge_min_score": 1,
+    "bridge_persistence_window_s": 1.0,
+    "seuil_gare_density_near": 0.22,
+    "seuil_gare_zrel_iqr": 1.2,
+    "seuil_tree_veg_mid": 0.20,
+    "seuil_tree_zrel_p90": 2.5,
+    "seuil_build_density_mid": 0.30,
+    "seuil_build_zrel_p95": 2.2,
+    "seuil_open_sky_density_near_max": 0.16,
+    "seuil_open_sky_density_far_max": 0.35,
+    "seuil_open_sky_zrel_p95_max": 2.2,
+    "seuil_open_sky_zrel_std_max": 1.6,
+    "seuil_open_sky_soft_score": 4,
+    "seuil_mixed_zrel_iqr": 1.6,
+    "seuil_mixed_zrel_std": 1.4,
+}
+
+
+def merge_labelisation_params(overrides: dict | None = None) -> dict:
+    params = dict(DEFAULT_PARAMS_LABELISATION)
+    if isinstance(overrides, dict):
+        params.update(overrides)
+    return params
+
+
+PARAMS_LABELISATION = merge_labelisation_params(_get_cfg("params_labelisation"))
 
 COLUMN_MAPPING = _get_cfg("column_mapping")
 if isinstance(COLUMN_MAPPING, list):
@@ -389,3 +431,4 @@ def get_dataset_path(dataset_name: str) -> dict[str, Path]:
         "label_encoder_path": label_encoder,
         "metadata": metadata_file,
     }
+

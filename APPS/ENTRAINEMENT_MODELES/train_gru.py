@@ -41,13 +41,13 @@ HIDDEN_UNITS = 32
 DENSE_UNITS = 16
 ACTIVATION = "tanh"
 RECURRENT_ACTIVATION = "sigmoid"
-DROPOUT = 0.0
+DROPOUT = 0.35
 KERNEL_REGULARIZER = None
 
 BATCH_SIZE = 16
 EPOCHS = 127
 INITIAL_LEARNING_RATE = 1e-3
-EARLY_STOPPING_PATIENCE = 256
+EARLY_STOPPING_PATIENCE = 30
 
 
 def _to_jsonable(obj):
@@ -294,6 +294,8 @@ def main() -> None:
     cm_json_path = model_dir / "confusion_matrix_test.json"
     report_json_path = model_dir / "classification_report_test.json"
     report_txt_path = model_dir / "classification_report_test.txt"
+    history_json_path = model_dir / "training_history.json"
+    training_curves_path = model_dir / "training_curves.png"
 
     fig, ax = plt.subplots(figsize=(7, 6))
     disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=label_encoder.classes_)
@@ -313,26 +315,38 @@ def main() -> None:
     with open(report_txt_path, "w", encoding="utf-8") as f:
         f.write(report_text)
 
-    if args.show_plots:
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-        axes[0].plot(history.history["accuracy"], label="Train")
-        axes[0].plot(history.history["val_accuracy"], label="Val")
-        axes[0].axhline(bal_acc, ls="--", color="red", label=f"Test bal. acc={bal_acc:.3f}")
-        axes[0].axvline(idx_best, ls="--", color="red")
-        axes[0].set_title("Accuracy")
-        axes[0].set_xlabel("Epoch")
-        axes[0].legend()
+    history_payload = {
+        "epochs_ran": int(len(history.history.get("loss", []))),
+        "best_epoch_val_loss": idx_best,
+        "history": _to_jsonable(history.history),
+    }
+    with open(history_json_path, "w", encoding="utf-8") as f:
+        json.dump(history_payload, f, indent=4)
 
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    if "accuracy" in history.history:
+        axes[0].plot(history.history["accuracy"], label="Train")
+    if "val_accuracy" in history.history:
+        axes[0].plot(history.history["val_accuracy"], label="Val")
+    axes[0].axhline(bal_acc, ls="--", color="red", label=f"Test bal. acc={bal_acc:.3f}")
+    axes[0].axvline(idx_best, ls="--", color="red")
+    axes[0].set_title("Accuracy")
+    axes[0].set_xlabel("Epoch")
+    axes[0].legend()
+
+    if "loss" in history.history:
         axes[1].plot(history.history["loss"], label="Train")
+    if "val_loss" in history.history:
         axes[1].plot(history.history["val_loss"], label="Val")
-        axes[1].axvline(idx_best, ls="--", color="red")
-        axes[1].set_title("Loss")
-        axes[1].set_xlabel("Epoch")
-        axes[1].legend()
-        plt.tight_layout()
-        plt.savefig(model_dir / "training_curves.png", dpi=150)
+    axes[1].axvline(idx_best, ls="--", color="red")
+    axes[1].set_title("Loss")
+    axes[1].set_xlabel("Epoch")
+    axes[1].legend()
+    plt.tight_layout()
+    plt.savefig(training_curves_path, dpi=150)
+    if args.show_plots:
         plt.show()
-        plt.close(fig)
+    plt.close(fig)
 
     model_metadata = {
         "model_id": model_paths["id"],
@@ -377,6 +391,8 @@ def main() -> None:
             "classification_report_txt": str(report_txt_path),
             "confusion_matrix_json": str(cm_json_path),
             "confusion_matrix_png": str(cm_img_path),
+            "training_history_json": str(history_json_path),
+            "training_curves_png": str(training_curves_path),
         },
     }
 
