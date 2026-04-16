@@ -37,11 +37,11 @@ from utils import PARAMS_ENTRAINEMENT, TRAINING_DIR, get_dataset_path, get_model
 tf.config.optimizer.set_jit(False)
 
 
-HIDDEN_UNITS = 32
+HIDDEN_UNITS = 16
 DENSE_UNITS = 16
 ACTIVATION = "tanh"
 RECURRENT_ACTIVATION = "sigmoid"
-DROPOUT = 0.35
+DROPOUT = 0.25
 KERNEL_REGULARIZER = None
 
 BATCH_SIZE = 16
@@ -269,8 +269,20 @@ def main() -> None:
     print(f"  Balanced accuracy    : {bal_acc:.4f}")
     print(f"  F1 weighted          : {f1_weighted:.4f}")
 
-    report_dict = classification_report(y_test, y_pred, target_names=label_encoder.classes_, output_dict=True)
-    report_text = classification_report(y_test, y_pred, target_names=label_encoder.classes_)
+    unique_labels_in_test = np.unique(np.concatenate([y_test, y_pred]))
+    target_names_present = [label_encoder.classes_[i] for i in unique_labels_in_test]
+
+    report_dict = classification_report(
+    y_test, 
+    y_pred, 
+    labels=unique_labels_in_test, 
+    target_names=target_names_present, 
+    output_dict=True)
+    report_text = classification_report(
+        y_test,
+        y_pred,
+        labels=unique_labels_in_test,
+        target_names=target_names_present)
     cm = confusion_matrix(y_test, y_pred)
 
     print("\n[5/6] Saving model artefacts and registry ...")
@@ -385,7 +397,7 @@ def main() -> None:
             "model": str(model_file),
             "metadata": str(model_paths["metadata"]),
             "results": str(model_paths["results"]),
-            "features_csv": str(features_path),
+            "lidar_features_csv": str(features_path),
             "scaler_pkl": str(scaler_copy_path),
             "classification_report_json": str(report_json_path),
             "classification_report_txt": str(report_txt_path),

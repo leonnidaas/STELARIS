@@ -23,6 +23,8 @@ REQUIRED_COLS = [
 ]
 
 OPTIONAL_NUMERIC_COLS = {
+    'signal_denied': 0.0,
+    'is_bridge': 0.0,
     'n_points_zone': 0.0,
     'enough_points_flag': 0.0,
     'density_near_0_5m': 0.0,
@@ -82,7 +84,7 @@ def _infer_speed_gt_mps(df):
 def _load_labelisation_params(params):
     p = params or {}
     return {
-        'seuil_vegetation': float(p.get('seuil_vegetation', 0.35)),
+        'seuil_vegetation': float(p.get('seuil_vegetation', 0.60)),
         'seuil_melange': float(p.get('seuil_melange', 0.20)),
         'seuil_ciel_ouvert': float(p.get('seuil_ciel_ouvert', 24.0)),
         'distance_scan': int(p.get('distance_scan', 5)),
@@ -259,6 +261,7 @@ def auto_label_environment(df_input,  params, output_csv_final=None, output_csv_
     # Gare: structure + signatures locales + vitesse faible
     gare_candidate = (
         (df['label'] != 'signal_denied')
+        & (df['label'] != 'bridge')
         & (df['bridge_recent_1s'] == 0)
         & (bridge_core == 0)
         & (df['is_under_structure'] == 1)
@@ -281,6 +284,13 @@ def auto_label_environment(df_input,  params, output_csv_final=None, output_csv_
         & (df['bridge_recent_1s'] == 1)
     )
     df.loc[bridge_mask, 'label'] = 'bridge'
+
+    # Regle prioritaire demandee: bridge si non denied et is_bridge == 1.
+    bridge_direct_mask = (
+        (df['signal_denied'] != 1)
+        & (df['is_bridge'] == 1)
+    )
+    df.loc[bridge_direct_mask, 'label'] = 'bridge'
 
     # 3. Labellisation par obstruction (si pas déjà sous une structure)
     mask_no_struct = ~df['label'].str.contains('bridge|signal_denied|gare')
@@ -507,5 +517,5 @@ if __name__ == "__main__":
 
     traj_id = "BORDEAUX_COUTRAS"
     config = get_traj_paths(traj_id)
-    features_file = config.get("features_csv")
+    features_file = config.get("lidar_features_csv")
     

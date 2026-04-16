@@ -33,9 +33,10 @@ def _resolve_pipeline_options(options=None, **overrides):
         "search_radius": RAYON_RECHERCHE,
         "corridor_width": 6.0,
         "corridor_length": 30.0,
+        "min_elevation_angle_deg": 0.0,
         "run_step_1_select_tiles": True,
         "run_step_2_download_tiles": True,
-        "run_step_3_fusion_gt_gnss": True,
+        "run_step_3_fusion_gt_gnss": False,
         "run_step_4_extract_lidar": True,
         "run_step_5_fusion_features": True,
         "run_step_6_labelisation": True,
@@ -65,6 +66,7 @@ def pipeline_labelisation(
     search_radius=None,
     corridor_width=None,
     corridor_length=None,
+    min_elevation_angle_deg=None,
 ):
     """
     Pipeline complet de labelisation.
@@ -90,6 +92,7 @@ def pipeline_labelisation(
         search_radius=search_radius,
         corridor_width=corridor_width,
         corridor_length=corridor_length,
+        min_elevation_angle_deg=min_elevation_angle_deg,
     )
 
     nb_workers = int(opts["nb_workers"])
@@ -101,9 +104,10 @@ def pipeline_labelisation(
     search_radius = float(opts["search_radius"])
     corridor_width = float(opts["corridor_width"])
     corridor_length = float(opts["corridor_length"])
+    min_elevation_angle_deg = float(opts.get("min_elevation_angle_deg", 0.0))
     run_step_1_select_tiles = bool(opts.get("run_step_1_select_tiles", True))
     run_step_2_download_tiles = bool(opts.get("run_step_2_download_tiles", True))
-    run_step_3_fusion_gt_gnss = bool(opts.get("run_step_3_fusion_gt_gnss", True))
+    run_step_3_fusion_gt_gnss = bool(opts.get("run_step_3_fusion_gt_gnss", False))
     run_step_4_extract_lidar = bool(opts.get("run_step_4_extract_lidar", True))
     run_step_5_fusion_features = bool(opts.get("run_step_5_fusion_features", True))
     run_step_6_labelisation = bool(opts.get("run_step_6_labelisation", True))
@@ -118,12 +122,13 @@ def pipeline_labelisation(
     list_url_file = config.get("lidar_url_list_file", config["lidar_tiles"] / f"urls_{traj_id}.txt")
     size_cache_file = config.get("lidar_size_cache_file", config["lidar_tiles"] / "remote_sizes_cache.json")
     features_file = config.get("fusion_features_csv")
-    labels_file = config.get("labels_csv")
+    labels_file = config.get("lidar_labels_csv")
 
     try:
         run_params_file, latest_params_file, _ = store_labelisation_run_params(
             config=config,
             traj_id=traj_id,
+            source="IGN",
             pipeline_opts=opts,
             params_labelisation=params_labelisation,
             decimation_factor=DECIMATION_FACTOR,
@@ -203,7 +208,7 @@ def pipeline_labelisation(
     print("ÉTAPE 3 : fusion de la GT et du GNSS pur")
     print("=" * 50)
     if run_step_3_fusion_gt_gnss:
-        # TODO : faire un lmessgae auto qui demande à bien vérifier les colones et à les ajouter dans le dictionaire de mapping si besoin, et à vérifier que les fichiers d'entrée ont bien les colonnes nécessaires (ex: time_utc, latitude, longitude, altitude) avant de lancer la fusion.
+        # TODO : faire un messgae auto qui demande à bien vérifier les colones et à les ajouter dans le dictionaire de mapping si besoin, et à vérifier que les fichiers d'entrée ont bien les colonnes nécessaires (ex: time_utc, latitude, longitude, altitude) avant de lancer la fusion.
         try:
             # Charger les données GT et GNSS
             df_gt = pd.read_csv(config["raw_gt"])
@@ -240,13 +245,13 @@ def pipeline_labelisation(
 
     if run_step_4_extract_lidar:
         gnss_offset_z = config.get("gnss_offset", (0.0, 0.0, 0.0))[2] if config.get("gnss_offset") else None
-        if extract_features or (not os.path.exists(config["features_csv"])):
+        if extract_features or (not os.path.exists(config["lidar_features_csv"])):
             # On recalcule les features si le fichier n'existe pas ou si l'extraction est demandée
-            print("Extraction des features, fichier non présent ou extraction demandée : ", config["features_csv"])
+            print("Extraction des features, fichier non présent ou extraction demandée : ", config["lidar_features_csv"])
             try:
                 process_lidar_tiles_for_labelisation(
                     traj_id,
-                    output_csv=config["features_csv"],
+                    output_csv=config["lidar_features_csv"],
                     search_radius=search_radius,
                     decimation_factor=DECIMATION_FACTOR,
                     n_workers=nb_workers,
@@ -254,13 +259,14 @@ def pipeline_labelisation(
                     corridor_width=corridor_width,
                     corridor_length=corridor_length,
                     gnss_offset_z=gnss_offset_z,
+                    min_elevation_angle_deg=min_elevation_angle_deg,
                 )
                 print("Extraction des features terminée !")
             except Exception as e:
                 print(f"Erreur lors de l'extraction des features : {e}")
                 return False
         else:
-            print("Fichier de features déjà présent et extraction non demandée, étape 4 ignorée : ", config["features_csv"])
+            print("Fichier de features déjà présent et extraction non demandée, étape 4 ignorée : ", config["lidar_features_csv"])
     else:
         print("Étape 4 ignorée (désactivée dans les options).")
 
@@ -271,7 +277,7 @@ def pipeline_labelisation(
     if run_step_5_fusion_features:
         try:
             gnss_features_file = config["gnss_features_csv"]
-            lidar_features_file = config["features_csv"]
+            lidar_features_file = config["lidar_features_csv"]
             fusion_features_file = config["fusion_features_csv"]
 
             if not os.path.exists(gnss_features_file):
@@ -300,7 +306,7 @@ def pipeline_labelisation(
         print("Étape 5 ignorée (désactivée dans les options).")
 
     print("\n" + "=" * 50)
-    print("ÉTAPE 6 : Labellisation de l'environnement")
+    print("ÉTAPE 6 : Labellisation de l'environnement avec le lidar HD")
     print("=" * 50)
 
     if run_step_6_labelisation:
@@ -312,7 +318,7 @@ def pipeline_labelisation(
                 # Génération d'un nom par défaut basé sur le trajet
                 features_file = config["final_dir"] / f"env_lidar_{traj_id}.csv"
 
-            labels_file = config.get("labels_csv")
+            labels_file = config.get("lidar_labels_csv")
             labels_features_file = config.get("labels_plus_features_csv")
             if labels_file is None:
                 print("⚠ Chemin du fichier de labels final non configuré, utilisation du nom par défaut")

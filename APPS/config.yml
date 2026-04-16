@@ -9,13 +9,27 @@ interim_dir: 01_INTERIM
 processed_dir: 02_PROCESSED
 training_dir: 03_TRAINING
 
+interim_source_dirs:
+  gnss: gnss
+  ign: ign
+  osm: osm
+  fusion: fusion
+
+processed_source_dirs:
+  gnss: gnss
+  ign: ign
+  osm: osm
+  fusion: fusion
+
 gnss_dir: GNSS_RINEX
 gnss_obs_dir: OBS
 gnss_nav_dir: NAV
 gt_dir: GROUNDTRUTH
 
 lidar_ta_relpath: IGN_LiDAR/TA_diff_pkk_lidarhd_classe.shp
-osm_pbf_relpath: OSM/corse.osm.pbf
+osm_pbf_relpath: OSM/PBF
+filtered_osm_pbf_relpath: OSM/PBF/FILTERED
+osm_geofabrik_url_europe: https://download.geofabrik.de/europe/
 grille_altitude_relpath: IGN/GRILLE_CONVERTION_ALTITUDE_WGS84_IGN69
 grille_altitude_file: fr_ign_RAF20.tif
 lidar_dir_relpath: IGN/TUILES_LIDAR_HD
@@ -45,7 +59,7 @@ chunk_size: 1048576
 
 # -----LABELISATION-----
 params_labelisation:
-  seuil_vegetation: 0.35
+  seuil_vegetation: 0.60
   seuil_melange: 0.20
   seuil_ciel_ouvert: 24.0
   distance_scan: 5

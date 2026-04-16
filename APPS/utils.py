@@ -1,23 +1,21 @@
 import os
 from pathlib import Path
-
 from flask import json
 import pyproj
 from dotenv import load_dotenv
 import yaml
 
-
 load_dotenv()
 
-
+# Config 
 _CONFIG_PATH = Path(__file__).with_name("config.yml")
 with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
 	_CONFIG = yaml.safe_load(f) or {}
 
-
 def _get_cfg(key, default=None):
 	return _CONFIG.get(key, default)
 
+# DEFINITIONS DES PATHS
 ROOT_PATH = Path(os.getenv("ROOT_PATH", _get_cfg("root_path", Path(__file__).parent.parent)))
 
 LOGO_PATH = ROOT_PATH /Path(_get_cfg("logo_path", "DOCUMENTATION/media/logo_onglet_2.png"))
@@ -27,13 +25,34 @@ INTERIM_DIR = DATA_DIR / _get_cfg("interim_dir", "01_INTERIM")
 PROCESSED_DIR = DATA_DIR / _get_cfg("processed_dir", "02_PROCESSED")
 TRAINING_DIR = DATA_DIR / _get_cfg("training_dir", "03_TRAINING")
 
+_INTERIM_SOURCE_DIRS = _get_cfg("interim_source_dirs", {}) or {}
+if not isinstance(_INTERIM_SOURCE_DIRS, dict):
+    _INTERIM_SOURCE_DIRS = {}
+
+_PROCESSED_SOURCE_DIRS = _get_cfg("processed_source_dirs", {}) or {}
+if not isinstance(_PROCESSED_SOURCE_DIRS, dict):
+    _PROCESSED_SOURCE_DIRS = {}
+
+INTERIM_GNSS_SUBDIR = str(_INTERIM_SOURCE_DIRS.get("gnss", "gnss"))
+INTERIM_IGN_SUBDIR = str(_INTERIM_SOURCE_DIRS.get("ign", "ign"))
+INTERIM_OSM_SUBDIR = str(_INTERIM_SOURCE_DIRS.get("osm", "osm"))
+INTERIM_FUSION_SUBDIR = str(_INTERIM_SOURCE_DIRS.get("fusion", "fusion"))
+
+PROCESSED_GNSS_SUBDIR = str(_PROCESSED_SOURCE_DIRS.get("gnss", "gnss"))
+PROCESSED_IGN_SUBDIR = str(_PROCESSED_SOURCE_DIRS.get("ign", "ign"))
+PROCESSED_OSM_SUBDIR = str(_PROCESSED_SOURCE_DIRS.get("osm", "osm"))
+PROCESSED_FUSION_SUBDIR = str(_PROCESSED_SOURCE_DIRS.get("fusion", "fusion"))
+
 GNSS_DIR = RAW_DIR / _get_cfg("gnss_dir", "GNSS_RINEX")
 GNSS_OBS = GNSS_DIR / _get_cfg("gnss_obs_dir", "OBS")
 GNSS_NAV = GNSS_DIR / _get_cfg("gnss_nav_dir", "NAV")
 GT_DIR = RAW_DIR / _get_cfg("gt_dir", "GROUNDTRUTH")
 
 LIDAR_TA = RAW_DIR / Path(_get_cfg("lidar_ta_relpath", "IGN_LiDAR/TA_diff_pkk_lidarhd_classe.shp"))
-OSM_PBF = RAW_DIR / Path(_get_cfg("osm_pbf_relpath", "OSM/corse.osm.pbf"))
+
+OSM_PBF = RAW_DIR / Path(_get_cfg("osm_pbf_relpath", "OSM/PBF"))
+FILTERED_OSM_PBF = RAW_DIR / Path(_get_cfg("filtered_osm_pbf_relpath", "OSM/PBF/FILTERED"))
+OSM_URL_EUROPE = _get_cfg("osm_geofabrik_url_europe", "https://download.geofabrik.de/europe/")
 
 GRILLE_ALTITUDE_DIR = RAW_DIR / Path(
 	_get_cfg("grille_altitude_relpath", "IGN/GRILLE_CONVERTION_ALTITUDE_WGS84_IGN69")
@@ -44,13 +63,17 @@ MODELS_DIR = ROOT_PATH / _get_cfg("models_dir", "MODELS")
 long_col = _get_cfg("long_col", "longitude")
 lat_col = _get_cfg("lat_col", "latitude")
 
+# API DALLES LIDAR HD IGN
 WFS_URL = _get_cfg("wfs_url", "https://data.geopf.fr/wfs/ows")
 WFS_VERSION = str(_get_cfg("wfs_version", "2.0.0"))
 LIDAR_LAYER = _get_cfg("lidar_layer", "IGNF_NUAGES-DE-POINTS-LIDAR-HD:dalle")
 
+# PARAMETRES DU PIPELINE DE TRAITEMENT ET DE LABELISATION
 RAYON_RECHERCHE = float(_get_cfg("rayon_recherche", 20.0))
 N_WORKERS = int(_get_cfg("n_workers", 10))
 DECIMATION_FACTOR = int(_get_cfg("decimation_factor", 1))
+CHUNK_SIZE = int(_get_cfg("chunk_size", 1048576))
+
 
 GRILLE_CONVERTION_ALTITUDE_WGS84_IGN69 = GRILLE_ALTITUDE_DIR / _get_cfg(
 	"grille_altitude_file", "fr_ign_RAF20.tif"
@@ -59,6 +82,7 @@ os.environ["PROJ_LIB"] = GRILLE_CONVERTION_ALTITUDE_WGS84_IGN69.parent.as_posix(
 os.environ["PROJ_DATA"] = GRILLE_CONVERTION_ALTITUDE_WGS84_IGN69.parent.as_posix()
 pyproj.datadir.set_data_dir(GRILLE_CONVERTION_ALTITUDE_WGS84_IGN69.parent.as_posix())
 
+# VENV PYTHON_INTERPRETER 
 PYTHON_RINEX_INTERPRETER = os.getenv(
 	"PYTHON_RINEX_INTERPRETER", _get_cfg("python_rinex_interpreter", "python")
 )
@@ -66,54 +90,11 @@ PYTHON_LABELISATION_INTERPRETER = os.getenv(
 	"PYTHON_LABELISATION_INTERPRETER", _get_cfg("python_labelisation_interpreter", "python")
 )
 
-CHUNK_SIZE = int(_get_cfg("chunk_size", 1048576))
-
-DEFAULT_PARAMS_LABELISATION = {
-    "seuil_vegetation": 0.35,
-    "seuil_melange": 0.20,
-    "seuil_ciel_ouvert": 24.0,
-    "distance_scan": 5,
-    "seuil_occupation_ciel": 0.12,
-    "seuil_overhead_bridge": 0.06,
-    "seuil_overhead_gare": 0.12,
-    "seuil_veg_high": 0.50,
-    "seuil_canopee": 0.10,
-    "seuil_building_density": 0.08,
-    "seuil_mixed_building": 0.06,
-    "seuil_mixed_veg": 0.18,
-    "seuil_min_points_zone": 20,
-    "seuil_vitesse_gare_mps": 6.0,
-    "seuil_bridge_density_min": 0.015,
-    "seuil_bridge_above_density_min": 0.001,
-    "seuil_bridge_above_count_min": 0,
-    "seuil_bridge_zrel_p95_min": 2.2,
-    "seuil_bridge_zrel_p99_min": 3.5,
-    "bridge_min_score": 1,
-    "bridge_persistence_window_s": 1.0,
-    "seuil_gare_density_near": 0.22,
-    "seuil_gare_zrel_iqr": 1.2,
-    "seuil_tree_veg_mid": 0.20,
-    "seuil_tree_zrel_p90": 2.5,
-    "seuil_build_density_mid": 0.30,
-    "seuil_build_zrel_p95": 2.2,
-    "seuil_open_sky_density_near_max": 0.16,
-    "seuil_open_sky_density_far_max": 0.35,
-    "seuil_open_sky_zrel_p95_max": 2.2,
-    "seuil_open_sky_zrel_std_max": 1.6,
-    "seuil_open_sky_soft_score": 4,
-    "seuil_mixed_zrel_iqr": 1.6,
-    "seuil_mixed_zrel_std": 1.4,
-}
-
-
-def merge_labelisation_params(overrides: dict | None = None) -> dict:
-    params = dict(DEFAULT_PARAMS_LABELISATION)
-    if isinstance(overrides, dict):
-        params.update(overrides)
-    return params
-
-
-PARAMS_LABELISATION = merge_labelisation_params(_get_cfg("params_labelisation"))
+try :
+    # Raises error if not defined, as these are critical for the labellisation process.
+    DEFAULT_PARAMS_LABELISATION = _get_cfg("params_labelisation") 
+except Exception as e:
+    raise ValueError(f"default_params_labellisation must be defined in config.yml: {e}") from e
 
 COLUMN_MAPPING = _get_cfg("column_mapping")
 if isinstance(COLUMN_MAPPING, list):
@@ -134,6 +115,15 @@ if not isinstance(PARAMS_ENTRAINEMENT, dict):
         "params_entrainement doit etre defini comme un dictionnaire dans config.yml"
     )
 
+def merge_labelisation_params(overrides: dict | None = None) -> dict:
+    params = dict(DEFAULT_PARAMS_LABELISATION)
+    if isinstance(overrides, dict):
+        params.update(overrides)
+    return params
+
+PARAMS_LABELISATION = merge_labelisation_params(_get_cfg("params_labelisation"))
+
+
 def standardize_dataframe(df):
     """Renomme les colonnes du DataFrame vers les standards internes."""
     rename_dict = {}
@@ -142,7 +132,6 @@ def standardize_dataframe(df):
             if col.lower() in [a.lower() for a in aliases]:
                 rename_dict[col] = standard_name
                 break
-
     return df.rename(columns=rename_dict)
 
 
@@ -275,6 +264,16 @@ def _resolve_shared_lidar_dirs(traj_interim_dir: Path, line_id: str) -> tuple[Pa
     return shared_tiles_dir, shared_root_dir, legacy_tiles_dir
 
 
+def _build_source_subdirs(base_dir: Path, source_mapping: dict[str, str]) -> dict[str, Path]:
+    """Crée et retourne les sous-dossiers par source pour un trajet."""
+    result: dict[str, Path] = {}
+    for source, folder_name in source_mapping.items():
+        src_dir = base_dir / folder_name
+        src_dir.mkdir(parents=True, exist_ok=True)
+        result[source] = src_dir
+    return result
+
+
 def get_traj_paths(traj_id: str):
     """Genere dynamiquement tous les chemins utiles pour un trajet dans un dictionnaire.
     { "id": traj_id,
@@ -284,14 +283,16 @@ def get_traj_paths(traj_id: str):
       "raw_gnss": <chemin du fichier de positionnement GNSS brut>,
       "space_vehicule_info": <chemin du fichier d'info espace vehicule>,
       "sync_csv": <chemin du fichier de fusion GT-GNSS>,
-      "features_csv": <chemin du fichier d'extraction des features LiDAR>,
+      "lidar_features_csv": <chemin du fichier d'extraction des features LiDAR>,
             "fusion_features_csv": <chemin du fichier de fusion GT + features GNSS + features LiDAR>,
             "final_fusion_csv": <chemin du fichier final fusionne GT + features GNSS + features LiDAR + label>,
     "labels_plus_features_csv": <chemin du fichier de fusion des features et labels>,
     "lidar_tiles": <chemin du dossier contenant les tuiles LiDAR (partage ligne)>,
       "obs_file": <chemin du fichier RINEX OBS>,
       "nav_file": <chemin du fichier RINEX NAV>,
-      "labels_csv": <chemin du fichier final traité>,
+      "lidar_labels_csv": <chemin du fichier final traité>,
+      "osm_features_csv": <chemin du fichier de features extraites d'OSM>,
+      "osm_features_csv": <chemin du fichier de features extraites d'OSM>,
       "gnss_offset": <tuple du bras de levier (x,y,z)>
       "gnss_features_csv": <chemin du fichier de features extraites du GNSS> 
     }
@@ -312,6 +313,36 @@ def get_traj_paths(traj_id: str):
     line_id, traj_annexe_dir, line_common_annexe_dir, legacy_annexe_dir = _resolve_annexe_dirs(traj_id)
     traj_interim_dir, interim_line_dir, interim_legacy_dir = _resolve_work_dirs(INTERIM_DIR, traj_id, line_id)
     traj_processed_file, processed_line_dir, processed_legacy_dir = _resolve_work_dirs(PROCESSED_DIR, traj_id, line_id)
+
+    interim_sources = _build_source_subdirs(
+        traj_interim_dir,
+        {
+            "gnss": INTERIM_GNSS_SUBDIR,
+            "ign": INTERIM_IGN_SUBDIR,
+            "osm": INTERIM_OSM_SUBDIR,
+            "fusion": INTERIM_FUSION_SUBDIR,
+        },
+    )
+    processed_sources = _build_source_subdirs(
+        traj_processed_file,
+        {
+            "gnss": PROCESSED_GNSS_SUBDIR,
+            "ign": PROCESSED_IGN_SUBDIR,
+            "osm": PROCESSED_OSM_SUBDIR,
+            "fusion": PROCESSED_FUSION_SUBDIR,
+        },
+    )
+
+    interim_gnss_dir = interim_sources["gnss"]
+    interim_ign_dir = interim_sources["ign"]
+    interim_osm_dir = interim_sources["osm"]
+    interim_fusion_dir = interim_sources["fusion"]
+
+    processed_gnss_dir = processed_sources["gnss"]
+    processed_ign_dir = processed_sources["ign"]
+    processed_osm_dir = processed_sources["osm"]
+    processed_fusion_dir = processed_sources["fusion"]
+
     lidar_tiles_dir, lidar_shared_root, lidar_tiles_legacy_dir = _resolve_shared_lidar_dirs(traj_interim_dir, line_id)
     lidar_urls_file = lidar_shared_root / f"urls_{line_id}.txt"
     lidar_size_cache_file = lidar_shared_root / "remote_sizes_cache.json"
@@ -330,7 +361,7 @@ def get_traj_paths(traj_id: str):
         print(f"Recherche du fichier GT pour {traj_id} dans {traj_gt_dir}")
         gt_file = list(traj_gt_dir.glob("*.csv"))[0]
     except Exception as e:
-        return f"Erreur : Aucun fichier GT trouve pour {traj_id} dans {GT_DIR} : {e}"
+        raise RuntimeError(f"Aucun fichier GT trouvé pour {traj_id} dans {GT_DIR} : {e}") from e
 
     try:
         print(f"Recherche du fichier RINEX OBS pour {traj_id} dans {traj_rinex_obs_dir}")
@@ -346,25 +377,18 @@ def get_traj_paths(traj_id: str):
         "id": traj_id,
         "line_id": line_id,
         "raw_gt": gt_file,
+        # dir 
         "interim_dir": traj_interim_dir,
         "final_dir": traj_processed_file,
-        "raw_gnss": traj_interim_dir / f"gnss_position_{traj_id}.csv",
-        "space_vehicule_info": traj_interim_dir / f"space_vehicule_info_{traj_id}.csv",
-        "sync_csv": traj_interim_dir / f"fusion_gt_gnss_{traj_id}.csv",
-        "features_csv": traj_interim_dir / f"features_lidar_{traj_id}.csv",
-        "fusion_features_csv": traj_interim_dir / f"fusion_gt_gnss_lidar_features_{traj_id}.csv",
-        "final_fusion_csv": traj_processed_file / f"fusion_finale_gnss_lidar_gt_label_{traj_id}.csv",
-        "labels_plus_features_csv": traj_interim_dir / f"features_lidar_plus_labels_{traj_id}.csv",
+        "interim_gnss_dir": interim_gnss_dir,
+        "interim_ign_dir": interim_ign_dir,
+        "interim_osm_dir": interim_osm_dir,
+        "interim_fusion_dir": interim_fusion_dir,
+        "processed_gnss_dir": processed_gnss_dir,
+        "processed_ign_dir": processed_ign_dir,
+        "processed_osm_dir": processed_osm_dir,
+        "processed_fusion_dir": processed_fusion_dir,
         "lidar_tiles": lidar_tiles_dir,
-        "lidar_url_list_file": lidar_urls_file,
-        "lidar_size_cache_file": lidar_size_cache_file,
-        "lidar_shared_root": lidar_shared_root,
-        "lidar_tiles_legacy_dir": lidar_tiles_legacy_dir,
-        "obs_file": obs_file,
-        "nav_file": nav_file,
-        "labels_csv": traj_processed_file / f"final_labeled_{traj_id}.csv",
-        "gnss_offset": lever_arm,
-        "gnss_features_csv": traj_processed_file / f"features_gnss_{traj_id}.csv",
         "annexe_traj_dir": traj_annexe_dir,
         "annexe_line_common_dir": line_common_annexe_dir,
         "lever_arm_file": lever_arm_path,
@@ -372,8 +396,31 @@ def get_traj_paths(traj_id: str):
         "interim_legacy_dir": interim_legacy_dir,
         "processed_line_dir": processed_line_dir,
         "processed_legacy_dir": processed_legacy_dir,
+        "lidar_tiles_legacy_dir": lidar_tiles_legacy_dir,
+        #GNSS
+        "obs_file": obs_file, #Rinex OBS 
+        "nav_file": nav_file, #Rinex NAV
+        "raw_gnss": interim_gnss_dir / f"gnss_position_{traj_id}.csv",
+        "space_vehicule_info": interim_gnss_dir / f"space_vehicule_info_{traj_id}.csv",
+        "gnss_offset": lever_arm,
+        "gnss_features_csv": processed_gnss_dir / f"features_gnss_{traj_id}.csv",
+        #fusion
+        "sync_csv": interim_gnss_dir / f"fusion_gt_gnss_{traj_id}.csv",
+        "fusion_features_csv": interim_fusion_dir / f"fusion_gt_gnss_lidar_features_{traj_id}.csv",
+        "final_fusion_csv": processed_fusion_dir / f"fusion_finale_gnss_lidar_gt_label_{traj_id}.csv",
+        "final_fusion_osm_csv": processed_fusion_dir / f"fusion_finale_gnss_osm_gt_label_{traj_id}.csv",
+        "labels_plus_features_csv": interim_ign_dir / f"features_lidar_plus_labels_{traj_id}.csv",
+        #LIDAR
+        "lidar_features_csv": interim_ign_dir / f"features_lidar_{traj_id}.csv",
+        "lidar_url_list_file": lidar_urls_file, 
+        "lidar_size_cache_file": lidar_size_cache_file, 
+        "lidar_shared_root": lidar_shared_root, 
+        "lidar_labels_csv": processed_ign_dir / f"final_labeled_lidar_{traj_id}.csv",
+        #OSM
+        "osm_pbf" : interim_osm_dir / f"filtered_osm_{traj_id}.pbf",
+        "osm_features_csv": interim_osm_dir / f"features_osm_{traj_id}.csv",
+        "osm_labels_csv": processed_osm_dir / f"final_labeled_osm_{traj_id}.csv",
     }
-
 
 def get_model_path(model_name: str, timestamp: str) -> dict[str, Path]:
     """Retourne le chemin des différentes infos du modele a partir de son ID (nom + date de creation),
@@ -431,4 +478,3 @@ def get_dataset_path(dataset_name: str) -> dict[str, Path]:
         "label_encoder_path": label_encoder,
         "metadata": metadata_file,
     }
-

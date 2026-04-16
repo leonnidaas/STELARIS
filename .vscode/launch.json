@@ -1,0 +1,18 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+
+        {
+            "name": "Python: Module",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "VISUALISATION.STREAMLIT.pages.pipeline_labelisation",
+            "cwd": "${workspaceFolder}/APPS",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "{workspaceFolder}/APP/venv_label/bin/python"
+            },
+            "console": "integratedTerminal"
+        }
+    ]
+}

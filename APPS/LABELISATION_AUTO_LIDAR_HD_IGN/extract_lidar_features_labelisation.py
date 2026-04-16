@@ -15,6 +15,11 @@ SKY_MASK_IGNORED_CLASSES = np.array([0, 1, 64, 66, 67], dtype=np.int64)
 AZIMUTH_BINS = 36
 CANOPEE_MIN_Z_REL = 2.0
 MIN_POINTS_FOR_STABLE_FEATURES = 20
+BRIDGE_CLASS_CODE = 17
+BRIDGE_CORRIDOR_WIDTH_M = 3.0
+BRIDGE_TIME_HORIZON_S = 2.0
+BRIDGE_MIN_POINTS_THRESHOLD = 10
+MIN_ELEVATION_ANGLE_DEG = 0.0
 
 
 def compute_sky_mask_deg_from_relative(z_relative, dist_horizontale, points_classes, min_dist_horizontale=0.8, ignored_classes=SKY_MASK_IGNORED_CLASSES):
@@ -61,6 +66,8 @@ def _add_local_heading_vectors(df):
 
     d["dir_x"] = vx / norm
     d["dir_y"] = vy / norm
+
+    d["speed_mps"] = d["velocity"].abs()
     return d
 
 
@@ -78,6 +85,7 @@ def _empty_feature(signal_denied=0):
     return {
         "sky_mask_deg": 0,
         "obs_type": 0,
+        "is_bridge": 0,
         "is_under_structure": 0,
         "veg_density": 0,
         "n_points_zone": 0,
@@ -99,6 +107,7 @@ def _empty_feature(signal_denied=0):
         "bridge_density": 0.0,
         "bridge_above_density": 0.0,
         "bridge_above_count": 0,
+        "bridge_corridor_count": 0,
         "canopee_ratio": 0.0,
         "obstacle_overhead_ratio": 0.0,
         "signal_denied": int(signal_denied),
@@ -143,6 +152,54 @@ def _safe_percentile(values, q):
     return float(np.percentile(values, q))
 
 
+def _row_speed_mps(row):
+    for col in ("speed_mps"):
+        if col in row.index and pd.notna(row[col]):
+            return max(float(row[col]), 0.0)
+    return 0.0
+
+
+def _compute_bridge_from_corridor(
+    row,
+    x_pts,
+    y_pts,
+    z_pts,
+    points_classes,
+    bridge_point_threshold,
+    bridge_corridor_width,
+    bridge_time_horizon_s,
+    gnss_offset_z=0.0,
+):
+    """ retourne un tuple (is_bridge, bridge_count) en fonction du nombre de points classes comme pont dans un couloir devant la trajectoire.
+    is_bridge est un entier binaire (0 ou 1) indiquant la presence d'un pont, tandis que bridge_count est le nombre de points classes comme pont dans le couloir. """
+    if points_classes.size == 0:
+        return 0, 0
+
+    speed_mps = _row_speed_mps(row)
+    corridor_length = max(speed_mps * float(bridge_time_horizon_s), 0.5)
+    half_length = max(corridor_length / 2.0, 0.25)
+    half_width = max(float(bridge_corridor_width) / 2.0, 0.1)
+
+    in_bridge_corridor = _corridor_filter(
+        x_pts,
+        y_pts,
+        float(row["x_gt"]),
+        float(row["y_gt"]),
+        float(row["dir_x"]),
+        float(row["dir_y"]),
+        half_width=half_width,
+        half_length=half_length,
+    )
+
+    z_ant = float(row["z_gt_ign69"])
+    z_relative = z_pts - z_ant + float(gnss_offset_z)
+    above_antenna = z_relative > 0.0
+
+    bridge_count = int(np.sum((points_classes == BRIDGE_CLASS_CODE) & in_bridge_corridor & above_antenna))
+    is_bridge = int(bridge_count >= int(bridge_point_threshold))
+    return is_bridge, bridge_count
+
+
 def _compute_azimuth_occupancy_ratio(dx, dy, valid_mask, bins=AZIMUTH_BINS):
     if dx.size == 0 or bins <= 0:
         return 0.0
@@ -157,6 +214,23 @@ def _compute_azimuth_occupancy_ratio(dx, dy, valid_mask, bins=AZIMUTH_BINS):
     counts, _ = np.histogram(az, bins=edges)
     occupied_bins = np.sum(counts > 0)
     return float(occupied_bins) / float(bins)
+
+
+def _apply_elevation_angle_mask(x_pts, y_pts, z_pts, points_classes, row, gnss_offset_z, min_elevation_angle_deg):
+    """Conserve uniquement les points au-dessus d'un angle minimal par rapport a l'horizontale de l'antenne."""
+    if points_classes.size == 0:
+        return x_pts, y_pts, z_pts, points_classes
+
+    z_ant = float(row["z_gt_ign69"])
+    dx = x_pts - float(row["x_gt"])
+    dy = y_pts - float(row["y_gt"])
+    dist_horizontale = np.sqrt(dx ** 2 + dy ** 2)
+    z_relative = z_pts - z_ant + float(gnss_offset_z)
+
+    elevation_deg = np.degrees(np.arctan2(z_relative, np.maximum(dist_horizontale, 1e-6)))
+    keep = elevation_deg >= float(min_elevation_angle_deg)
+
+    return x_pts[keep], y_pts[keep], z_pts[keep], points_classes[keep]
 
 
 def _read_tile_points_bbox_filtered(
@@ -216,7 +290,16 @@ def _read_tile_points_bbox_filtered(
     )
 
 
-def _compute_point_features(row, x_pts, y_pts, z_pts, points_classes, gnss_offset_z=0.0):
+def _compute_point_features(
+    row,
+    x_pts,
+    y_pts,
+    z_pts,
+    points_classes,
+    gnss_offset_z=0.0,
+    is_bridge_flag=0,
+    bridge_corridor_count=0,
+):
     # Repere antenne: meme convention que la visualisation (decalage ajoute a z_relative).
     z_ant = float(row["z_gt_ign69"])
     gt_x = float(row["x_gt"])
@@ -236,7 +319,7 @@ def _compute_point_features(row, x_pts, y_pts, z_pts, points_classes, gnss_offse
 
     is_build = 6 in points_classes[above] if np.any(above) else False
     is_veg = np.any(np.isin(points_classes[above], [3, 4, 5])) if np.any(above) else False
-    is_bridge = 17 in points_classes[above] if np.any(above) else False
+    is_bridge = bool(is_bridge_flag)
     under = int(np.any((dist_horizontale < 2.0) & (z_pts > z_ant) & (~np.isin(points_classes, [0, 1]))))
 
     signal_denied = int(
@@ -257,7 +340,7 @@ def _compute_point_features(row, x_pts, y_pts, z_pts, points_classes, gnss_offse
     is_veg_mid = points_classes == 4
     is_veg_high = points_classes == 5
     is_veg_any = np.isin(points_classes, [3, 4, 5])
-    bridge_above_mask = (points_classes == 17) & (z_relative > 0.0) & (dist_horizontale > 0.8)
+    bridge_above_mask = (points_classes == BRIDGE_CLASS_CODE) & (z_relative > 0.0) & (dist_horizontale > 0.8)
 
     canopee_mask = is_veg_any & (z_relative > float(CANOPEE_MIN_Z_REL))
     overhead_mask = not_ignored & (z_relative > 0.0) & (dist_horizontale < 5.0)
@@ -265,6 +348,7 @@ def _compute_point_features(row, x_pts, y_pts, z_pts, points_classes, gnss_offse
     return {
         "sky_mask_deg": round(sky_mask, 2),
         "obs_type": _compute_obs_type(is_build, is_veg, is_bridge),
+        "is_bridge": int(is_bridge),
         "is_under_structure": under,
         "veg_density": round(np.mean(np.isin(points_classes, [3, 4, 5])), 3),
         "n_points_zone": n_points,
@@ -283,9 +367,10 @@ def _compute_point_features(row, x_pts, y_pts, z_pts, points_classes, gnss_offse
         "vegetation_density_low": round(_safe_ratio(is_veg_low, n_points), 3),
         "vegetation_density_mid": round(_safe_ratio(is_veg_mid, n_points), 3),
         "vegetation_density_high": round(_safe_ratio(is_veg_high, n_points), 3),
-        "bridge_density": round(_safe_ratio(points_classes == 17, n_points), 3),
+        "bridge_density": round(_safe_ratio(points_classes == BRIDGE_CLASS_CODE, n_points), 3),
         "bridge_above_density": round(_safe_ratio(bridge_above_mask, n_points), 3),
         "bridge_above_count": int(np.sum(bridge_above_mask)),
+        "bridge_corridor_count": int(bridge_corridor_count),
         "canopee_ratio": round(_safe_ratio(canopee_mask, n_points), 3),
         "obstacle_overhead_ratio": round(_safe_ratio(overhead_mask, n_points), 3),
         "signal_denied": signal_denied,
@@ -302,6 +387,10 @@ def process_single_tile_labelisation(
     corridor_length=None,
     gnss_offset_z=0.0,
     lidar_chunk_size=1_000_000,
+    bridge_point_threshold=BRIDGE_MIN_POINTS_THRESHOLD,
+    bridge_corridor_width=BRIDGE_CORRIDOR_WIDTH_M,
+    bridge_time_horizon_s=BRIDGE_TIME_HORIZON_S,
+    min_elevation_angle_deg=MIN_ELEVATION_ANGLE_DEG,
 ):
     """Traite une dalle LiDAR et extrait les features utiles a la labellisation."""
     try:
@@ -320,6 +409,12 @@ def process_single_tile_labelisation(
             half_w, half_l, preselect_radius = _compute_spatial_params(
                 search_radius, spatial_mode, corridor_width, corridor_length
             )
+
+            # Couverture suffisante pour le couloir pont (longueur = vitesse * horizon).
+            max_speed = float(df_tile.get("speed_mps", pd.Series([0.0])).max()) if len(df_tile) else 0.0
+            max_bridge_length = max(max_speed * float(bridge_time_horizon_s), 0.5)
+            bridge_preselect_radius = float(np.hypot(max_bridge_length / 2.0, float(bridge_corridor_width) / 2.0))
+            preselect_radius = max(preselect_radius, bridge_preselect_radius)
 
             l_x, l_y, l_z, l_c = _read_tile_points_bbox_filtered(
                 fh,
@@ -359,6 +454,31 @@ def process_single_tile_labelisation(
                 z_pts = l_z[indices]
                 points_classes = l_c[indices]
 
+                x_pts, y_pts, z_pts, points_classes = _apply_elevation_angle_mask(
+                    x_pts,
+                    y_pts,
+                    z_pts,
+                    points_classes,
+                    row,
+                    gnss_offset_z=gnss_offset_z,
+                    min_elevation_angle_deg=min_elevation_angle_deg,
+                )
+                if points_classes.size == 0:
+                    features.append(_empty_feature(signal_denied=signal_denied))
+                    continue
+
+                is_bridge_flag, bridge_corridor_count = _compute_bridge_from_corridor(
+                    row,
+                    x_pts,
+                    y_pts,
+                    z_pts,
+                    points_classes,
+                    bridge_point_threshold=bridge_point_threshold,
+                    bridge_corridor_width=bridge_corridor_width,
+                    bridge_time_horizon_s=bridge_time_horizon_s,
+                    gnss_offset_z=gnss_offset_z,
+                )
+
                 if spatial_mode == "corridor":
                     in_corridor = _corridor_filter(
                         x_pts,
@@ -386,6 +506,8 @@ def process_single_tile_labelisation(
                         z_pts,
                         points_classes,
                         gnss_offset_z=gnss_offset_z,
+                        is_bridge_flag=is_bridge_flag,
+                        bridge_corridor_count=bridge_corridor_count,
                     )
                 )
 
@@ -406,6 +528,10 @@ def process_lidar_tiles_for_labelisation(
     corridor_length=None,
     gnss_offset_z=None,
     lidar_chunk_size=1_000_000,
+    bridge_point_threshold=BRIDGE_MIN_POINTS_THRESHOLD,
+    bridge_corridor_width=BRIDGE_CORRIDOR_WIDTH_M,
+    bridge_time_horizon_s=BRIDGE_TIME_HORIZON_S,
+    min_elevation_angle_deg=MIN_ELEVATION_ANGLE_DEG,
 ):
     """Pipeline parallele d'extraction des features LiDAR pour la labellisation."""
     if spatial_mode not in {"circle", "corridor"}:
@@ -420,7 +546,7 @@ def process_lidar_tiles_for_labelisation(
     lidar_folder = config["lidar_tiles"]
 
     if output_csv is None:
-        output_csv = config["features_csv"]
+        output_csv = config["lidar_features_csv"]
 
     tiles = [f for f in os.listdir(lidar_folder) if f.endswith((".las", ".laz"))]
     tiles = [lidar_folder / t for t in tiles]
@@ -438,6 +564,10 @@ def process_lidar_tiles_for_labelisation(
             corridor_length=corridor_length,
             gnss_offset_z=gnss_offset_z,
             lidar_chunk_size=lidar_chunk_size,
+            bridge_point_threshold=bridge_point_threshold,
+            bridge_corridor_width=bridge_corridor_width,
+            bridge_time_horizon_s=bridge_time_horizon_s,
+            min_elevation_angle_deg=min_elevation_angle_deg,
         )
         results = list(tqdm(executor.map(process_func, tiles), total=len(tiles)))
 

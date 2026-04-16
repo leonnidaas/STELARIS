@@ -2,11 +2,11 @@
     "folder-color.pathColors": [
         {
             "folderPath": "STELARIS/APPS/ENTRAINEMENT_MODELES/",
-            "color": "foldercolorizer.color_cc6699"
+            "color": "foldercolorizer.color_8787d7"
         },
         {
             "folderPath": "STELARIS/APPS/EXTRACTION_DES_FEATURES_GNSS/",
-            "color": "foldercolorizer.color_00ccff"
+            "color": "foldercolorizer.color_00afd7"
         },
         {
             "folderPath": "STELARIS/APPS/EXTRACTION_DES_FEATURES_GNSS/extraction_features_gnss.py/",
@@ -14,11 +14,19 @@
         },
         {
             "folderPath": "STELARIS/APPS/LABELISATION_AUTO_LIDAR_HD_IGN/",
-            "color": "foldercolorizer.color_00cc66"
+            "color": "foldercolorizer.color_00ff00"
         },
         {
             "folderPath": "STELARIS/APPS/VISUALISATION/",
             "color": "foldercolorizer.color_99ccff"
+        },
+        {
+            "folderPath": "STELARIS/APPS/LABELISATION_OSM/",
+            "color": "foldercolorizer.color_00875f"
+        },
+        {
+            "folderPath": "STELARIS/APPS/VISUALISATION/STREAMLIT/",
+            "color": "foldercolorizer.color_d78700"
         }
     ]
 }

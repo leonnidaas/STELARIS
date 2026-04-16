@@ -105,31 +105,54 @@ def assign_geographic_segments(df: pd.DataFrame, grid_size_km: float = 5.0) -> p
         grid_size_km: La taille désirée du côté d'un segment de grille (en kilomètres).
     """
     df = df.copy()
-    
+
     if "latitude_gt" not in df.columns or "longitude_gt" not in df.columns:
         raise ValueError("Les colonnes 'latitude_gt' et 'longitude_gt' sont requises.")
+
+    def _extract_numeric_1d(col_name: str) -> np.ndarray:
+        # If duplicate column names exist, pandas returns a DataFrame: keep first column.
+        col_obj = df[col_name]
+        if isinstance(col_obj, pd.DataFrame):
+            col_obj = col_obj.iloc[:, 0]
+        arr = pd.to_numeric(col_obj, errors="coerce").to_numpy(dtype=float)
+        return np.asarray(arr, dtype=float).reshape(-1)
 
     # Conversion de la distance souhaitée en degrés (Approximation terrestre standard)
     # 1 degré de latitude = ~111.32 km partout sur Terre.
     # 1 degré de longitude = ~111.32 km à l'équateur, mais se réduit avec la latitude.
     # Pour la France (lat ~46°), le cosinus de 46° est d'environ 0.69.
     
-    deg_lat_step = grid_size_km / 111.32
+    deg_lat_step = float(grid_size_km) / 111.32
     
     # On calcule un facteur de longitude moyen sur le dataset pour garder des blocs carrés
-    mean_lat = np.nanmean(df["latitude_gt"].values)
-    deg_lon_step = grid_size_km / (111.32 * np.cos(np.radians(mean_lat)))
+    lat_values = _extract_numeric_1d("latitude_gt")
+    lon_values = _extract_numeric_1d("longitude_gt")
+
+    if lat_values.size != lon_values.size:
+        raise ValueError("Colonnes latitude_gt/longitude_gt incoherentes (tailles differentes).")
+
+    mean_lat = float(np.nanmean(lat_values)) if lat_values.size else np.nan
+    cos_lat = float(np.cos(np.radians(mean_lat))) if np.isfinite(mean_lat) else np.nan
+    # Avoid instability near poles or invalid mean latitude.
+    if not np.isfinite(cos_lat) or abs(cos_lat) < 1e-6:
+        cos_lat = 1e-6
+
+    deg_lon_step = float(grid_size_km) / (111.32 * abs(cos_lat))
     
     # Discrétisation par division euclidienne (floor)
-    lat_bins = np.floor(df["latitude_gt"].values / deg_lat_step) * deg_lat_step
-    lon_bins = np.floor(df["longitude_gt"].values / deg_lon_step) * deg_lon_step
+    lat_bins = np.floor(lat_values / deg_lat_step) * deg_lat_step
+    lon_bins = np.floor(lon_values / deg_lon_step) * deg_lon_step
     
     # Création de l'ID de grille universel
     # On formate à 4 décimales pour éviter les problèmes de précision flottante dans les strings
-    df["segment_id"] = [
-        f"GEO_GRID_{lat:.4f}_{lon:.4f}" 
-        for lat, lon in zip(lat_bins, lon_bins)
-    ]
+    segment_ids: list[str] = []
+    for lat, lon in zip(lat_bins, lon_bins):
+        if np.isfinite(lat) and np.isfinite(lon):
+            segment_ids.append(f"GEO_GRID_{float(lat):.4f}_{float(lon):.4f}")
+        else:
+            segment_ids.append("GEO_GRID_NA_NA")
+
+    df["segment_id"] = segment_ids
     
     return df
 
@@ -397,8 +420,7 @@ def main(
         raise ValueError("Colonne 'gps_millis' manquante dans le dataset.")
 
     print("\n[4/8] Filtering, encoding and sequence build ...")
-    df_features = df_features[df_features["label"] != "mixed"]
-
+    
     x = df_features[safe_feature_names].values
     y_label = df_features["label"].values
     t = pd.to_numeric(df_features["gps_millis"], errors="coerce").values * 1e-3
@@ -427,9 +449,6 @@ def main(
 
     total_rows_after_filters = int(np.sum(mask_finite))
     total_rows_after_stride = int(len(x))
-    
-    le = LabelEncoder().fit(y_label) # On encode les labels avant de faire les splits pour garantir la cohérence des classes dans les splits et le calcul des class weights, même si certaines classes sont absentes de certains splits.
-    y = le.transform(y_label)
 
     # Segment codes are used to prevent sequence contamination across segments.
     segment_codes, _ = pd.factorize(segment_id, sort=False)
@@ -440,10 +459,33 @@ def main(
         segment_codes=segment_codes,
     )
 
+    # Exclusion apres creation des fenetres: on filtre selon la classe centrale.
+    y_label_norm = np.array([str(v).strip().lower().replace("_", " ").replace("-", " ") for v in y_label])
+    center_excluded = np.isin(y_label_norm, ["mixed", "signal denied","gare"])
+    # On transforme tous les bridges en build
+    y_label[center_excluded & (y_label_norm == "gare")] = "build"
+    center_keep = ~center_excluded
+    n_center_excluded = int(np.sum(center_excluded))
+
+    x = x[center_keep]
+    y_label = y_label[center_keep]
+    segment_id = segment_id[center_keep]
+    t = t[center_keep]
+    x_tensor = x_tensor[center_keep]
+
+    if len(y_label) == 0:
+        raise ValueError(
+            "Aucune fenetre restante apres exclusion des classes centrales 'mixed' et 'signal denied'."
+        )
+
+    le = LabelEncoder().fit(y_label)
+    y = le.transform(y_label)
+
     print(f"  Samples after filtering: {len(x):,}")
+    print(f"  Center windows excluded : {n_center_excluded:,}")
     print(f"  Class distribution:      {Counter(y_label)}")
     print(f"  Segments uniques:        {len(np.unique(segment_id))}")
-
+    
     list_classes_weights = compute_class_weight(class_weight="balanced", classes=np.unique(y), y=y)
     print(f"  Class weights: {dict(enumerate(list_classes_weights))}")
 

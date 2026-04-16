@@ -31,7 +31,8 @@ N_TRIALS = 25
 N_CV_SPLITS = 5
 OPTUNA_RANDOM = 42
 
-
+OBJECTIVE =  "multi:softprob" # "binary:logistic"
+EVAL_METRIC = "mlogloss" if OBJECTIVE.startswith("multi:") else "logloss"
 def _to_jsonable(obj):
     if isinstance(obj, (np.integer,)):
         return int(obj)
@@ -100,8 +101,8 @@ def build_objective(x_train, y_train, id_train, n_splits, random_state):
 
     def objective(trial: optuna.Trial) -> float:
         params = {
-            "objective": "multi:softprob",
-            "eval_metric": "logloss",
+            "objective": OBJECTIVE,
+            "eval_metric": EVAL_METRIC,
             "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3),
             "max_depth": trial.suggest_int("max_depth", 3, 10),
             "n_estimators": trial.suggest_int("n_estimators", 150, 500),
@@ -180,13 +181,19 @@ def main() -> None:
     print("\n[3/6] Training final model ...")
     best_params = {
         **study.best_params,
-        "objective": "multi:softprob",
-        "eval_metric": "logloss",
+        "objective": OBJECTIVE,
+        "eval_metric": EVAL_METRIC,
     }
 
     final_model = XGBClassifier(**best_params)
     sample_weights = compute_sample_weight(class_weight="balanced", y=y_train)
-    final_model.fit(x_train, y_train, sample_weight=sample_weights)
+    final_model.fit(
+        x_train,
+        y_train,
+        sample_weight=sample_weights,
+        eval_set=[(x_train, y_train), (x_test, y_test)],
+        verbose=False,
+    )
 
     print("\n[4/6] Evaluating on test split ...")
     y_pred = final_model.predict(x_test)
@@ -221,6 +228,10 @@ def main() -> None:
     cm_json_path = model_dir / "confusion_matrix_test.json"
     report_json_path = model_dir / "classification_report_test.json"
     report_txt_path = model_dir / "classification_report_test.txt"
+    xgb_history_json_path = model_dir / "xgboost_training_history.json"
+    xgb_curves_path = model_dir / "xgboost_training_curves.png"
+    feature_importance_png_path = model_dir / "feature_importance.png"
+    feature_importance_gain_json_path = model_dir / "feature_importance_gain.json"
 
     fig, ax = plt.subplots(figsize=(7, 6))
     disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=le.classes_)
@@ -240,9 +251,51 @@ def main() -> None:
     with open(report_txt_path, "w", encoding="utf-8") as f:
         f.write(report_text)
 
+    evals_result = final_model.evals_result() if hasattr(final_model, "evals_result") else {}
+    with open(xgb_history_json_path, "w", encoding="utf-8") as f:
+        json.dump(_to_jsonable(evals_result), f, indent=4)
+
+    train_logloss = evals_result.get("validation_0", {}).get("logloss", [])
+    test_logloss = evals_result.get("validation_1", {}).get("logloss", [])
+    if train_logloss and test_logloss:
+        n = min(len(train_logloss), len(test_logloss))
+        train_logloss = train_logloss[:n]
+        test_logloss = test_logloss[:n]
+        gap = [float(te) - float(tr) for tr, te in zip(train_logloss, test_logloss)]
+
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        axes[0].plot(train_logloss, label="Train logloss")
+        axes[0].plot(test_logloss, label="Test logloss")
+        axes[0].set_title("XGBoost logloss")
+        axes[0].set_xlabel("Boosting iteration")
+        axes[0].set_ylabel("Logloss")
+        axes[0].grid(alpha=0.2)
+        axes[0].legend()
+
+        axes[1].plot(gap, label="Gap (test - train)", color="#c1121f")
+        axes[1].axhline(0.0, linestyle="--", color="#6b7280", linewidth=1)
+        axes[1].set_title("Overfitting gap")
+        axes[1].set_xlabel("Boosting iteration")
+        axes[1].set_ylabel("Logloss gap")
+        axes[1].grid(alpha=0.2)
+        axes[1].legend()
+
+        fig.tight_layout()
+        fig.savefig(xgb_curves_path, dpi=150)
+        if args.show_plots:
+            plt.show()
+        plt.close(fig)
+
     if feature_names:
+        booster = final_model.get_booster()
+        booster.feature_names = feature_names
+
+        raw_gain = booster.get_score(importance_type="gain")
+        gain_by_feature = {name: float(raw_gain.get(name, 0.0)) for name in feature_names}
+        with open(feature_importance_gain_json_path, "w", encoding="utf-8") as f:
+            json.dump(_to_jsonable(gain_by_feature), f, indent=4)
+
         fig, axs = plt.subplots(2, 1, figsize=(10, 8))
-        final_model.get_booster().feature_names = feature_names
         plot_importance(
             final_model,
             ax=axs[0],
@@ -260,7 +313,7 @@ def main() -> None:
             title="Weight",
         )
         fig.tight_layout()
-        fig.savefig(model_dir / "feature_importance.png", dpi=150)
+        fig.savefig(feature_importance_png_path, dpi=150)
         if args.show_plots:
             plt.show()
         plt.close(fig)
@@ -293,12 +346,16 @@ def main() -> None:
             "model": str(model_file),
             "metadata": str(model_paths["metadata"]),
             "results": str(model_paths["results"]),
-            "features_csv": str(features_path),
+            "lidar_features_csv": str(features_path),
             "scaler_pkl": str(scaler_copy_path),
             "classification_report_json": str(report_json_path),
             "classification_report_txt": str(report_txt_path),
             "confusion_matrix_json": str(cm_json_path),
             "confusion_matrix_png": str(cm_img_path),
+            "training_history_json": str(xgb_history_json_path),
+            "training_curves_png": str(xgb_curves_path),
+            "feature_importance_png": str(feature_importance_png_path),
+            "feature_importance_gain_json": str(feature_importance_gain_json_path),
         },
     }
 
