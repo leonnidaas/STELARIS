@@ -30,6 +30,16 @@ LABEL_PARAM_SPECS: dict[str, dict[str, Any]] = {
 }
 
 
+USEFUL_LABEL_PARAMS_ORDER = [
+    "seuil_vegetation",
+    "seuil_ciel_ouvert",
+    "distance_scan",
+    "seuil_building_density",
+    "seuil_build_zrel_p95",
+    "seuil_overhead_bridge",
+]
+
+
 OSM_LABEL_PARAM_SPECS: dict[str, dict[str, Any]] = {
     "smooth_window": {"kind": "int", "min": 1, "max": 101, "step": 2},
 }
@@ -44,12 +54,12 @@ def _ensure_state() -> None:
         st.session_state.last_resume = []
     if "last_csv_changes" not in st.session_state:
         st.session_state.last_csv_changes = []
-    if "last_scenario_logs" not in st.session_state:
-        st.session_state.last_scenario_logs = []
-    if "last_scenario_id" not in st.session_state:
-        st.session_state.last_scenario_id = None
-    if "show_last_scenario_logs" not in st.session_state:
-        st.session_state.show_last_scenario_logs = False
+    if "last_run_phase_logs" not in st.session_state:
+        st.session_state.last_run_phase_logs = []
+    if "show_last_run_logs" not in st.session_state:
+        st.session_state.show_last_run_logs = False
+    if "last_run_logs_enabled" not in st.session_state:
+        st.session_state.last_run_logs_enabled = False
     if "logs_enabled_for_run" not in st.session_state:
         st.session_state.logs_enabled_for_run = False
 
@@ -330,7 +340,12 @@ def render_page() -> None:
 
             st.divider()
             st.markdown("Parametres de labelisation (override pour ce run)")
-            for param_key, default_val in merge_labelisation_params(PARAMS_LABELISATION).items():
+            st.caption("Affichage volontairement reduit aux parametres utiles avec les features LiDAR compactes.")
+            merged_params = merge_labelisation_params(PARAMS_LABELISATION)
+            for param_key in USEFUL_LABEL_PARAMS_ORDER:
+                if param_key not in merged_params:
+                    continue
+                default_val = merged_params[param_key]
                 spec = LABEL_PARAM_SPECS.get(param_key, {"kind": "float", "min": 0.0, "max": 1000.0, "step": 0.01})
                 widget_key = f"label_param_{param_key}"
                 if spec["kind"] == "int":
@@ -458,9 +473,9 @@ def render_page() -> None:
 
     lancer = st.button("Lancer", type="primary", width="stretch", disabled=is_running)
     if lancer and not is_running:
-        st.session_state.last_scenario_logs = []
-        st.session_state.last_scenario_id = None
-        st.session_state.show_last_scenario_logs = False
+        st.session_state.last_run_phase_logs = []
+        st.session_state.show_last_run_logs = False
+        st.session_state.last_run_logs_enabled = bool(st.session_state.logs_enabled_for_run)
         st.session_state.pending_run = {
             "mode": mode,
             "phases_choisies": phases_choisies,
@@ -485,18 +500,17 @@ def render_page() -> None:
             else:
                 st.info("Aucun CSV cree ou modifie detecte pour cette execution.")
 
-        if st.session_state.last_scenario_logs and st.session_state.logs_enabled_for_run:
-            label = "Masquer les logs du dernier scenario" if st.session_state.show_last_scenario_logs else "Voir les logs du dernier scenario"
+        if st.session_state.last_run_phase_logs and st.session_state.last_run_logs_enabled:
+            label = "Masquer les logs du dernier run" if st.session_state.show_last_run_logs else "Voir les logs du dernier run"
             if st.button(label, type="secondary", width="stretch"):
-                st.session_state.show_last_scenario_logs = not st.session_state.show_last_scenario_logs
+                st.session_state.show_last_run_logs = not st.session_state.show_last_run_logs
                 st.rerun()
 
-            if st.session_state.show_last_scenario_logs:
-                scen = st.session_state.last_scenario_id or "(inconnu)"
-                st.markdown(f"Logs du dernier scenario traite: {scen}")
-                for phase_name, phase_ok, logs in st.session_state.last_scenario_logs:
+            if st.session_state.show_last_run_logs:
+                st.markdown("Logs du dernier run (par trajet puis phase)")
+                for traj_id, phase_name, phase_ok, logs in st.session_state.last_run_phase_logs:
                     status = "OK" if phase_ok else "ERROR"
-                    with st.expander(f"{phase_name} ({status})"):
+                    with st.expander(f"{traj_id} | {phase_name} ({status})"):
                         st.code(logs or "(aucun log)")
 
         return
@@ -534,6 +548,7 @@ def render_page() -> None:
 
     resume = []
     all_csv_changes = []
+    run_phase_logs: list[tuple[str, str, bool, str]] = []
     progress = st.progress(0, text=f"trajet 1/{len(selected_trajets)}") 
 
     try:
@@ -551,7 +566,9 @@ def render_page() -> None:
                     for phase_name in PHASES:
                         st.markdown(f"⏳ {phase_name}")
                     if logs_enabled_for_run:
-                        phase_log_placeholders = {phase_name: st.empty() for phase_name in PHASES}
+                        # Single live area: reset at each phase like the training page.
+                        live_placeholder = st.empty()
+                        phase_log_placeholders = {phase_name: live_placeholder for phase_name in PHASES}
 
                     ok, details = run_pipeline_complet(
                         traj_id,
@@ -562,9 +579,8 @@ def render_page() -> None:
                     )
 
                     if logs_enabled_for_run:
-                        # Keep only current scenario logs; overwritten each scenario.
-                        st.session_state.last_scenario_id = traj_id
-                        st.session_state.last_scenario_logs = list(details)
+                        for phase_name, phase_ok, phase_logs in details:
+                            run_phase_logs.append((traj_id, phase_name, phase_ok, phase_logs))
 
                     for phase_name, phase_ok, _logs in details:
                         icon = "✅" if phase_ok else "❌"
@@ -586,21 +602,21 @@ def render_page() -> None:
                     )
                 else:
                     ordered_phases = [phase_name for phase_name in PHASES if phase_name in phases_choisies]
-                    scenario_phase_logs: list[tuple[str, bool, str]] = []
+                    live_placeholder = st.empty() if logs_enabled_for_run else None
                     for phase_name in ordered_phases:
                         expected_paths = expected_csv_outputs(traj_id, phase_name)
                         before = snapshot_mtimes(expected_paths)
 
                         st.markdown(f"⏳ {phase_name}")
-                        log_placeholder = st.empty() if logs_enabled_for_run else None
                         ok, _logs = run_module(
                             phase_name,
                             traj_id,
-                            log_placeholder=log_placeholder,
+                            log_placeholder=live_placeholder,
                             phase_params=phase_params,
                             max_live_lines=max_live_lines,
                         )
-                        scenario_phase_logs.append((phase_name, ok, _logs))
+                        if logs_enabled_for_run:
+                            run_phase_logs.append((traj_id, phase_name, ok, _logs))
                         icon = "✅" if ok else "❌"
                         st.markdown(f"{icon} {phase_name}")
 
@@ -623,11 +639,6 @@ def render_page() -> None:
                         if not ok and stop_on_error:
                             break
 
-                    if logs_enabled_for_run:
-                        # Keep only current scenario logs; overwritten each scenario.
-                        st.session_state.last_scenario_id = traj_id
-                        st.session_state.last_scenario_logs = list(scenario_phase_logs)
-
             next_idx = min(idx + 1, len(selected_trajets))
             progress.progress(idx / len(selected_trajets), text=f"trajet {next_idx}/{len(selected_trajets)}")
 
@@ -637,6 +648,8 @@ def render_page() -> None:
 
     st.session_state.last_resume = resume
     st.session_state.last_csv_changes = all_csv_changes
+    st.session_state.last_run_phase_logs = run_phase_logs
+    st.session_state.last_run_logs_enabled = logs_enabled_for_run
     st.rerun()
 
 

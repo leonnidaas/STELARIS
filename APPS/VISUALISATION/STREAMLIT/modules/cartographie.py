@@ -8,6 +8,22 @@ import numpy as np
 import branca.colormap as bcm
 
 
+TILE_CONFIG = {
+    "Satellite": {
+        "tiles": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        "attr": "Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community",
+    },
+    "OpenStreetMap": {
+        "tiles": "OpenStreetMap",
+        "attr": "&copy; OpenStreetMap contributors",
+    },
+    "CartoDB positron": {
+        "tiles": "CartoDB positron",
+        "attr": "&copy; CartoDB",
+    },
+}
+
+
 LABEL_COLORS = {
     "open-sky": "#636EFA",
     "tree": "#00CC96",
@@ -28,8 +44,132 @@ def _normalize_label(val):
         return None
     return txt.lower().replace("_", "-")
 
-def render_carte(df, traj_id):
-    st.title(f"🗺️ Cartographie Interactive :")
+
+def render_categorical_segments_map(
+    df,
+    *,
+    lat_col: str,
+    lon_col: str,
+    category_col: str,
+    category_color_map: dict[str, str],
+    key_suffix: str,
+    title: str,
+    detail_points_label: str = "Afficher des points detailles",
+    detail_points_default: bool = True,
+    legend_title: str = "Legende",
+    gt_label: str = "Trajet Ground Truth",
+    ordered_categories: list[str] | None = None,
+    popup_fields: list[str] | None = None,
+) -> None:
+    st.subheader(title)
+
+    map_df = df.dropna(subset=[lat_col, lon_col, category_col]).copy()
+    if map_df.empty:
+        st.info("Aucune coordonnee valide a afficher.")
+        return
+
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        map_style = st.selectbox(
+            "Fond de carte",
+            ["Aucun", "OpenStreetMap", "CartoDB positron", "Satellite"],
+            index=1,
+            key=f"map_style_{key_suffix}",
+        )
+        show_detail_points = st.checkbox(
+            detail_points_label,
+            value=detail_points_default,
+            key=f"detail_points_{key_suffix}",
+        )
+
+    with col2:
+        tile_choice = None if map_style == "Aucun" else map_style
+        m = folium.Map(
+            location=[map_df[lat_col].mean(), map_df[lon_col].mean()],
+            zoom_start=15,
+            tiles=TILE_CONFIG[tile_choice]["tiles"] if tile_choice else None,
+            attr=TILE_CONFIG[tile_choice]["attr"] if tile_choice else None,
+            prefer_canvas=True,
+            control_scale=True,
+        )
+
+        points_gt = map_df[[lat_col, lon_col]].values.tolist()
+        if len(points_gt) >= 2:
+            folium.PolyLine(points_gt, color="#333333", weight=2, opacity=0.5).add_to(m)
+
+        if len(map_df) >= 2:
+            for i in range(1, len(map_df)):
+                label = str(map_df.iloc[i][category_col])
+                seg_color = category_color_map.get(label, "#1f77b4")
+                p0 = [map_df.iloc[i - 1][lat_col], map_df.iloc[i - 1][lon_col]]
+                p1 = [map_df.iloc[i][lat_col], map_df.iloc[i][lon_col]]
+                folium.PolyLine([p0, p1], color=seg_color, weight=4, opacity=0.9).add_to(m)
+
+        if show_detail_points:
+            for _, row in map_df.iterrows():
+                label = str(row[category_col])
+                point_color = category_color_map.get(label, "#1f77b4")
+                popup_lines = [f"<b>{category_col}:</b> {label}"]
+                if popup_fields:
+                    for field in popup_fields:
+                        popup_lines.append(f"<b>{field}:</b> {row.get(field, 'N/A')}")
+
+                folium.CircleMarker(
+                    location=[float(row[lat_col]), float(row[lon_col])],
+                    radius=3,
+                    color=point_color,
+                    fill=True,
+                    fill_color=point_color,
+                    fill_opacity=0.75,
+                    popup="<br>".join(popup_lines),
+                ).add_to(m)
+
+        observed = map_df[category_col].astype(str).value_counts()
+        if ordered_categories is None:
+            ordered = observed.index.tolist()
+        else:
+            ordered = [c for c in ordered_categories if c in observed.index]
+            ordered.extend([c for c in observed.index if c not in ordered])
+
+        legend_rows = "".join(
+            (
+                "<div><span style='display:inline-block; width:10px; height:10px; border-radius:50%; "
+                f"background:{category_color_map.get(lbl, '#1f77b4')}; margin-right:6px;'></span>"
+                f"{lbl} ({int(observed[lbl])})</div>"
+            )
+            for lbl in ordered
+        )
+        legend_html = f"""
+        <div style="
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            z-index: 9999;
+            background-color: rgba(255, 255, 255, 0.95);
+            border: 1px solid #bdbdbd;
+            border-radius: 8px;
+            padding: 10px 12px;
+            font-size: 13px;
+            line-height: 1.45;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+        ">
+            <div style="font-weight: 600; margin-bottom: 6px;">{legend_title}</div>
+            <div><span style="display:inline-block; width:16px; height:2px; background:#333333; margin-right:6px; vertical-align:middle;"></span>{gt_label}</div>
+            {legend_rows}
+        </div>
+        """
+        m.get_root().html.add_child(folium.Element(legend_html))
+
+        st_folium(
+            m,
+            width=None,
+            height=600,
+            returned_objects=[],
+            key=f"categorical_map_{key_suffix}",
+        )
+
+def render_carte_monitoring(df, traj_id):
+    st.title(f"Cartographie Interactive :")
     st.markdown("Visualisez la précision du GNSS et l'impact de l'environnement sur la carte.")
     # --- FILTRES DE COULEUR ---
     col1, col2 = st.columns([1, 4])
@@ -59,18 +199,6 @@ def render_carte(df, traj_id):
         selection = st.selectbox("Colorer le trajet par :", list(metrics.keys()), index=4)
         target_col = metrics[selection]
 
-        TILE_CONFIG = {"Satellite": {
-        "tiles": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        "attr": "Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community"
-        }, 
-        "OpenStreetMap": {
-            "tiles": "OpenStreetMap",
-            "attr": "&copy; OpenStreetMap contributors"
-        }, 
-        "CartoDB positron": {
-            "tiles": "CartoDB positron",
-            "attr": "&copy; CartoDB"
-        }}
         # Options de la carte
         map_style = st.selectbox(
             "Fond de carte",

@@ -103,14 +103,14 @@ def build_objective(x_train, y_train, id_train, n_splits, random_state):
         params = {
             "objective": OBJECTIVE,
             "eval_metric": EVAL_METRIC,
-            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3),
-            "max_depth": trial.suggest_int("max_depth", 3, 10),
-            "n_estimators": trial.suggest_int("n_estimators", 150, 500),
-            "subsample": trial.suggest_float("subsample", 0.2, 1.0),
+            "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.3),
+            "max_depth": trial.suggest_int("max_depth", 3, 8),
+            "n_estimators": trial.suggest_int("n_estimators", 150, 1000),
+            "subsample": trial.suggest_float("subsample", 0.5, 1.0),
             "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
             "gamma": trial.suggest_float("gamma", 0.0, 0.5),
-            "reg_alpha": trial.suggest_float("reg_alpha", 1e-3, 10.0, log=True),
-            "reg_lambda": trial.suggest_float("reg_lambda", 1e-3, 10.0, log=True),
+            "reg_alpha": trial.suggest_float("reg_alpha", 1e-6, 100.0, log=True),
+            "reg_lambda": trial.suggest_float("reg_lambda", 1e-3, 100.0, log=True),
         }
 
         gkf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=random_state)

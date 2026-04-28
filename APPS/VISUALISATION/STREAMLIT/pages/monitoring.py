@@ -3,7 +3,7 @@ import os
 import streamlit as st
 
 from modules.analyses import render_analyses
-from modules.cartographie import render_carte
+from modules.cartographie import render_carte_monitoring
 from modules.correlation_monitoring import render_correlation_module
 from modules.lidar_slice_2d import render_lidar_slice_2d
 from modules.monitoring_breakdown import render_monitoring_breakdown
@@ -137,7 +137,7 @@ def render_page() -> None:
         st.divider()
 
     if show_carte:
-        render_carte(matched_df, scenario_id)
+        render_carte_monitoring(matched_df, scenario_id)
 
     if show_corr:
         render_correlation_module(matched_df, trajet_id=scenario_id)

@@ -29,7 +29,7 @@ def main():
     parser = argparse.ArgumentParser(description="STELARIS Pipeline Manager")
     parser.add_argument(
         "--step",
-        choices=["all", "prepro", "optimize_gru", "train_xgb", "train_gru", "eval"],
+        choices=["all", "prepro", "optimize_gru", "train_xgb", "train_gru", "train_cnn", "eval"],
         default="all",
     )
     parser.add_argument("--dataset-name", type=str, default=None, help="Nom du dataset (si déjà existant)")
@@ -47,6 +47,8 @@ def main():
     parser.add_argument("--optuna-min-delta", type=float, default=1e-4)
     parser.add_argument("--optuna-mixed-precision", action="store_true", default=True)
     parser.add_argument("--no-optuna-mixed-precision", action="store_false", dest="optuna_mixed_precision")
+    parser.add_argument("--with-cnn", action="store_true", default=False, help="En mode --step all, lance aussi l'entrainement 1D CNN")
+    parser.add_argument("--cnn-epochs", type=int, default=50, help="Nombre d'epochs pour train_1D_CNN.py")
     
     args = parser.parse_args()
     
@@ -90,7 +92,12 @@ def main():
         gru_args = ["--dataset-name", ds_name, "--epochs", "50"]
         run_script("train_gru.py", gru_args)
 
-    # --- ÉTAPE 5 : ÉVALUATION ---
+    # --- ÉTAPE 5 : ENTRAÎNEMENT 1D CNN (OPTIONNEL EN MODE ALL) ---
+    if args.step == "train_cnn" or (args.step == "all" and args.with_cnn):
+        cnn_args = ["--dataset-name", ds_name, "--epochs", str(args.cnn_epochs)]
+        run_script("train_1D_CNN.py", cnn_args)
+
+    # --- ÉTAPE 6 : ÉVALUATION ---
     if args.step in ["all", "eval"]:
         # Note : evaluate.py doit être mis à jour pour accepter --dataset-name
         eval_args = ["--dataset-name", ds_name]

@@ -14,6 +14,9 @@ from LABELISATION_AUTO_LIDAR_HD_IGN.extract_lidar_features_labelisation import c
 IGNORED_CLASSES_FOR_SKY = np.array([0, 1, 64, 66, 67], dtype=np.int64)
 TRAIN_ORDER_CORRIDOR_WIDTH_M = 1.0
 TRAIN_ORDER_CORRIDOR_LENGTH_M = 5.0
+AZIMUTH_OCCUPANCY_BINS = 36
+AZIMUTH_OCCUPANCY_MIN_Z_REL = 1.5
+AZIMUTH_OCCUPANCY_MAX_DIST = 30.0
 
 
 def _as_path(path_like):
@@ -311,6 +314,28 @@ def _sky_mask_deg(z_relative, dist_horizontale, classes):
     )
 
 
+def _azimuth_occupancy_ratio(points_xyz, origin_xyz, z_relative):
+    if len(points_xyz) == 0:
+        return 0.0
+
+    dx = points_xyz[:, 0] - float(origin_xyz[0])
+    dy = points_xyz[:, 1] - float(origin_xyz[1])
+    dist_h = np.hypot(dx, dy)
+
+    obstacle_mask = (
+        (z_relative > float(AZIMUTH_OCCUPANCY_MIN_Z_REL))
+        & (dist_h < float(AZIMUTH_OCCUPANCY_MAX_DIST))
+    )
+    if not np.any(obstacle_mask):
+        return 0.0
+
+    az = np.arctan2(dy[obstacle_mask], dx[obstacle_mask])
+    az = np.mod(az, 2.0 * np.pi)
+    edges = np.linspace(0.0, 2.0 * np.pi, int(AZIMUTH_OCCUPANCY_BINS) + 1)
+    counts, _ = np.histogram(az, bins=edges)
+    return float(np.sum(counts > 0)) / float(AZIMUTH_OCCUPANCY_BINS)
+
+
 def _downsample(points_xyz, classes, max_points, seed=42):
     n = len(points_xyz)
     if n <= max_points:
@@ -327,6 +352,56 @@ def _class_color_array(classes):
     out[classes == 17] = "#F39C12"
     out[classes == 2] = "#8E8E8E"
     return out
+
+
+def _parse_timeline_input_to_idx(raw_value, timeline):
+    if raw_value is None:
+        return None
+    s = str(raw_value).strip()
+    if not s:
+        return None
+
+    if s.lstrip("+-").isdigit():
+        return int(np.clip(int(s), 0, len(timeline) - 1))
+
+    ts = pd.to_datetime(s, errors="coerce")
+    if pd.isna(ts):
+        return None
+    if getattr(ts, "tzinfo", None) is not None:
+        ts = ts.tz_localize(None)
+
+    vals = timeline.values.astype("datetime64[ns]")
+    target = np.datetime64(ts.to_datetime64())
+    idx = int(np.argmin(np.abs(vals - target)))
+    return int(np.clip(idx, 0, len(timeline) - 1))
+
+
+def _sync_lidar_time_text_from_idx(idx_key, text_key, timeline):
+    idx = int(np.clip(st.session_state.get(idx_key, 0), 0, len(timeline) - 1))
+    st.session_state[idx_key] = idx
+    st.session_state[text_key] = str(timeline[idx].strftime("%Y-%m-%d %H:%M:%S"))
+
+
+def _sync_lidar_idx_from_text(idx_key, text_key, timeline, time_key=None):
+    parsed_idx = _parse_timeline_input_to_idx(st.session_state.get(text_key, ""), timeline)
+    if parsed_idx is None:
+        return
+    st.session_state[idx_key] = int(parsed_idx)
+    st.session_state[text_key] = str(timeline[int(parsed_idx)].strftime("%Y-%m-%d %H:%M:%S"))
+    if time_key is not None:
+        st.session_state[time_key] = timeline[int(parsed_idx)].to_pydatetime()
+
+
+def _sync_lidar_from_time_slider(idx_key, text_key, time_key, timeline):
+    selected = st.session_state.get(time_key)
+    if selected is None:
+        return
+    selected_ts = pd.Timestamp(selected)
+    idx = int(np.searchsorted(timeline.values, np.datetime64(selected_ts), side="left"))
+    idx = int(np.clip(idx, 0, len(timeline) - 1))
+    st.session_state[idx_key] = idx
+    st.session_state[text_key] = str(timeline[idx].strftime("%Y-%m-%d %H:%M:%S"))
+    st.session_state[time_key] = timeline[idx].to_pydatetime()
 
 
 def _train_rectangle(center_xy, u_xy, length_m, width_m):
@@ -796,39 +871,63 @@ def render_lidar_slice_2d(trajet_id, lidar_dir, matched_df, gnss_offset_z=0.0, s
         return
 
     idx_key = f"slice2d_second_idx_{trajet_id}"
+    text_key = f"slice2d_second_text_{trajet_id}"
+    time_key = f"slice2d_second_time_{trajet_id}"
     if idx_key not in st.session_state:
         st.session_state[idx_key] = 0
 
     max_idx = len(timeline) - 1
     st.session_state[idx_key] = int(np.clip(st.session_state[idx_key], 0, max_idx))
 
+    moved_by_buttons = False
     n0, n1, n2, n3, n4 = st.columns([1.0, 1.0, 1.4, 1.0, 1.0])
     with n0:
         if st.button("<< 10s", key=f"slice2d_prev10_{trajet_id}"):
             st.session_state[idx_key] = max(0, st.session_state[idx_key] - 10)
+            moved_by_buttons = True
     with n1:
         if st.button("< 1s", key=f"slice2d_prev1_{trajet_id}"):
             st.session_state[idx_key] = max(0, st.session_state[idx_key] - 1)
+            moved_by_buttons = True
     with n2:
         st.caption("Defilement coupe 2D")
     with n3:
         if st.button("1s >", key=f"slice2d_next1_{trajet_id}"):
             st.session_state[idx_key] = min(max_idx, st.session_state[idx_key] + 1)
+            moved_by_buttons = True
     with n4:
         if st.button("10s >>", key=f"slice2d_next10_{trajet_id}"):
             st.session_state[idx_key] = min(max_idx, st.session_state[idx_key] + 10)
 
-    win_start_dt = st.slider(
-        "Heure (pas 1 seconde)",
-        min_value=t0.to_pydatetime(),
-        max_value=t1.to_pydatetime(),
-        value=timeline[st.session_state[idx_key]].to_pydatetime(),
-        step=timedelta(seconds=1),
-        format="HH:mm:ss",
-    )
-    win_start = pd.Timestamp(win_start_dt)
-    idx_from_slider = int(np.searchsorted(timeline.values, np.datetime64(win_start), side="left"))
-    st.session_state[idx_key] = int(np.clip(idx_from_slider, 0, max_idx))
+    if (text_key not in st.session_state) or moved_by_buttons:
+        _sync_lidar_time_text_from_idx(idx_key, text_key, timeline)
+    if (time_key not in st.session_state) or moved_by_buttons:
+        st.session_state[time_key] = timeline[int(np.clip(st.session_state[idx_key], 0, max_idx))].to_pydatetime()
+
+    tsel0, tsel1 = st.columns([3.0, 2.0])
+    with tsel0:
+        st.slider(
+            "Heure (pas 1 seconde)",
+            min_value=t0.to_pydatetime(),
+            max_value=t1.to_pydatetime(),
+            value=st.session_state[time_key],
+            step=timedelta(seconds=1),
+            format="HH:mm:ss",
+            key=time_key,
+            on_change=_sync_lidar_from_time_slider,
+            args=(idx_key, text_key, time_key, timeline),
+        )
+    with tsel1:
+        st.text_input(
+            "Aller a (index ou date/heure)",
+            key=text_key,
+            help="Exemples: 120 | 2025-04-24 05:38:10 | 05:38:10",
+            on_change=_sync_lidar_idx_from_text,
+            args=(idx_key, text_key, timeline, time_key),
+        )
+
+    idx_value = int(np.clip(st.session_state[idx_key], 0, max_idx))
+    win_start = pd.Timestamp(timeline[idx_value])
     win_end = win_start + pd.Timedelta(seconds=1)
     win_center = win_start + pd.Timedelta(milliseconds=500)
 
@@ -943,13 +1042,15 @@ def render_lidar_slice_2d(trajet_id, lidar_dir, matched_df, gnss_offset_z=0.0, s
 
     sky = _sky_mask_deg(z_relative, dist_horizontale, classes)
     veg_density = float(np.mean(np.isin(classes, [3, 4, 5]))) if len(classes) else 0.0
+    azimuth_occupancy_ratio = _azimuth_occupancy_ratio(points_xyz, origin, z_relative)
+    effective_veg_density = veg_density * azimuth_occupancy_ratio
     row = df[df["time_utc"] == win_start]
 
     M = st.columns(6)
     i = 0
     M[i].metric("Sky mask", f"{sky:.2f} deg")
     i += 1
-    M[i].metric("Densite vegetation", f"{veg_density:.3f}")
+    M[i].metric("Densite vegetation effective", f"{effective_veg_density:.3f}")
     i += 1
     M[i].metric("CMC (multitrajet)", f"{row['gnss_feat_CMC_l1'].iloc[0]:.2f}")
     i += 1
@@ -959,6 +1060,10 @@ def render_lidar_slice_2d(trajet_id, lidar_dir, matched_df, gnss_offset_z=0.0, s
     i += 1
     M[i].metric("Label", f"{row['label'].iloc[0] if 'label' in row else 'N/A'}")
     i += 1
+
+    st.caption(
+        f"veg_density brute={veg_density:.3f} | azimuth_occupancy_ratio={azimuth_occupancy_ratio:.3f} | effective={effective_veg_density:.3f}"
+    )
 
     # Ordre train/nuage base sur la mediane des points LiDAR dans un couloir local
     # 1 m de large x 5 m de long, oriente selon l'axe d'avancement.

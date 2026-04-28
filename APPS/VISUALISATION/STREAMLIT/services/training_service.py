@@ -7,7 +7,13 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
-from utils import PYTHON_LABELISATION_INTERPRETER, get_dataset_path, list_traj_ids, ROOT_PATH
+from utils import (
+    PYTHON_LABELISATION_INTERPRETER,
+    get_dataset_path,
+    list_rinex_traj_ids,
+    list_traj_ids,
+    ROOT_PATH,
+)
 
 
 APPS_ROOT = ROOT_PATH / "APPS"
@@ -17,6 +23,7 @@ TRAINING_SCRIPTS = {
     "Preprocessing": "ENTRAINEMENT_MODELES.preprocessing",
     "Optimisation GRU (Optuna)": "ENTRAINEMENT_MODELES.optimize_gru",
     "Entrainement GRU": "ENTRAINEMENT_MODELES.train_gru",
+    "Entrainement 1D CNN": "ENTRAINEMENT_MODELES.train_1D_CNN",
     "Entrainement XGBoost": "ENTRAINEMENT_MODELES.train_xgboost",
     "Evaluation": "ENTRAINEMENT_MODELES.evaluate",
 }
@@ -24,6 +31,10 @@ TRAINING_SCRIPTS = {
 
 def list_trajets() -> list[str]:
     return list_traj_ids()
+
+
+def list_trajets_for_inference() -> list[str]:
+    return list_rinex_traj_ids()
 
 
 def trajet_unique_id(trajet_id: str) -> str:
@@ -52,6 +63,7 @@ def build_artefacts_map(dataset_name: str) -> dict[str, Path]:
     eval_dir = cfg["output_dir"] / "evaluations"
     return {
         "Donnees pretraitees": cfg["preprocessed_data"],
+        "Donnees pretraitees (CNN)": cfg["preprocessed_data_cnn"],
         "Classes": cfg["classes_param"],
         "Scaler": cfg["scaler_param"],
         "Label Encoder": cfg["label_encoder_path"],
@@ -59,6 +71,24 @@ def build_artefacts_map(dataset_name: str) -> dict[str, Path]:
         "Optuna GRU (best params)": cfg["output_dir"] / "gru_optuna_best_params.json",
         "Rapport Evaluation (latest)": eval_dir / "comparison_report.json",
     }
+
+
+def list_training_datasets(training_dir: Path) -> list[str]:
+    """List datasets sorted by latest metadata update time."""
+    if not training_dir.exists():
+        return []
+
+    candidates: list[tuple[float, str]] = []
+    for d in training_dir.iterdir():
+        if not d.is_dir():
+            continue
+        meta_path = d / f"{d.name}_metadata.json"
+        if not meta_path.exists():
+            continue
+        candidates.append((meta_path.stat().st_mtime, d.name))
+
+    candidates.sort(reverse=True)
+    return [name for _, name in candidates]
 
 
 def resolve_training_python() -> str:

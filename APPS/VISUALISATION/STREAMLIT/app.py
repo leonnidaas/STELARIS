@@ -3,6 +3,8 @@ from datetime import datetime
 
 import streamlit as st
 
+
+
 st.set_page_config(page_title="STELARIS", layout="wide", page_icon="🚀")
 
 
@@ -65,7 +67,9 @@ pipeline = st.Page("pages/pipeline_labelisation.py", title="Pipeline de labelisa
 monitoring = st.Page("pages/monitoring.py", title="Tableau de bord", icon="📊")
 training = st.Page("pages/training.py", title="Entrainement des modeles", icon="🧠")
 training_results = st.Page("pages/training_results.py", title="Resultats entrainement", icon="📉")
+inference = st.Page("pages/inference.py", title="Inference", icon="✏️")
+evaluation_inference = st.Page("pages/evaluation_modele_labelisation.py", title="Evaluation inference", icon="🧪")
 
 _render_global_reload_button()
-nav = st.navigation([home, pipeline, monitoring, training, training_results])
+nav = st.navigation([home, pipeline, monitoring, training, training_results, inference, evaluation_inference])
 nav.run()

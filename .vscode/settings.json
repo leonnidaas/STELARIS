@@ -27,6 +27,10 @@
         {
             "folderPath": "STELARIS/APPS/VISUALISATION/STREAMLIT/",
             "color": "foldercolorizer.color_d78700"
+        },
+        {
+            "folderPath": "STELARIS/APPS/INFERENCE_MODELES/",
+            "color": "foldercolorizer.color_ff5fff"
         }
     ]
 }

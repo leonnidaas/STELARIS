@@ -23,29 +23,23 @@ def _pick_row_by_time_slider(df: pd.DataFrame, key_suffix: str):
         picked = df[df["time_utc"].astype(str) == selected_raw].iloc[0]
         return picked, None
 
-    min_time = times.loc[valid_idx].min().to_pydatetime()
-    max_time = times.loc[valid_idx].max().to_pydatetime()
+    valid_points = df.loc[valid_idx].copy()
+    valid_points = valid_points.assign(_time_local=times.loc[valid_idx].to_numpy())
+    valid_points = valid_points.sort_values("_time_local", kind="stable").reset_index(drop=False)
 
-    selected_time = st.slider(
-        "time_utc",
-        min_value=min_time,
-        max_value=max_time,
-        value=min_time,
-        format="YYYY-MM-DD HH:mm:ss",
-        key=f"time_utc_slider_{key_suffix}",
+    max_pos = len(valid_points) - 1
+    picked_pos = st.select_slider(
+        "Heure du point",
+        options=list(range(max_pos + 1)),
+        value=0,
+        key=f"time_point_slider_{key_suffix}",
+        format_func=lambda i: valid_points.loc[int(i), "_time_local"].strftime("%H:%M:%S"),
     )
 
-    selected_ts = pd.Timestamp(selected_time)
-    deltas = (times.loc[valid_idx] - selected_ts).abs()
-    picked_idx = int(deltas.idxmin())
+    picked_idx = int(valid_points.loc[picked_pos, "index"])
     picked = df.loc[picked_idx]
     nearest_time = times.loc[picked_idx]
-    delta_s = abs((nearest_time - selected_ts).total_seconds())
-
-    if delta_s > 0:
-        st.caption(
-            f"time_utc demande: {selected_ts} | point le plus proche: {nearest_time} | ecart: {delta_s:.3f}s"
-        )
+    st.caption(f"Point #{picked_pos}/{max_pos} | time_utc: {nearest_time}")
 
     return picked, None
 

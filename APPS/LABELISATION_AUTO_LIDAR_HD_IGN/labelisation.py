@@ -309,9 +309,11 @@ def auto_label_environment(df_input,  params, output_csv_final=None, output_csv_
         (df['obs_type'] == 1)
         | (df['building_density'] > cfg['seuil_building_density'])
         | (
-            (df['density_mid_5_15m'] > cfg['seuil_build_density_mid'])
+            (df['obs_type'].isin([0, 1, 3]))
+            & (df['density_mid_5_15m'] > cfg['seuil_build_density_mid'])
             & (df['zrel_p95'] > cfg['seuil_build_zrel_p95'])
             & (df['vegetation_density_low'] < 0.25)
+            & (df['building_density'] > cfg['seuil_mixed_building'])
         )
     )
     df.loc[build_mask, 'label'] = 'build'

@@ -154,10 +154,8 @@ def explain_label_reason(row, params_cfg: dict | None = None) -> tuple[str, list
         checks = [
             f"veg_density={values['veg_density']:.3f} (seuil {cfg['seuil_vegetation']})",
             f"obs_type={values['obs_type']} (= 2 favorise la branche tree)",
-            f"vegetation_density_high={values['vegetation_density_high']:.3f} (>= {cfg['seuil_veg_high']})",
-            f"vegetation_density_mid={values['vegetation_density_mid']:.3f} (>= {cfg['seuil_tree_veg_mid']})",
-            f"zrel_p90={float(_row_value(row, ('zrel_p90',), 0.0) or 0.0):.2f} (>= {cfg['seuil_tree_zrel_p90']})",
-            f"canopee_ratio={values['canopee_ratio']:.3f} (>= {cfg['seuil_canopee']})",
+            f"building_density={values['building_density']:.3f} (faible attendu pour tree)",
+            f"zrel_p95={values['zrel_p95']:.2f}",
         ]
         return (
             "Tree retenu car la vegetation domine la zone locale.",
@@ -165,29 +163,40 @@ def explain_label_reason(row, params_cfg: dict | None = None) -> tuple[str, list
         )
 
     if label == "build":
+        branch_obs_type = (values["obs_type"] == 1)
+        branch_density = (values["building_density"] > cfg["seuil_building_density"])
+        branch_height = values["zrel_p95"] > cfg["seuil_build_zrel_p95"]
+
+        def _yn(flag: bool) -> str:
+            return "OK" if flag else "KO"
+
         checks = [
-            f"obs_type={values['obs_type']} (= 1 favorise la branche build)",
-            f"building_density={values['building_density']:.3f} (>= {cfg['seuil_building_density']})",
-            f"density_mid_5_15m={float(_row_value(row, ('density_mid_5_15m',), 0.0) or 0.0):.3f} (>= {cfg['seuil_build_density_mid']})",
-            f"zrel_p95={values['zrel_p95']:.2f} (>= {cfg['seuil_build_zrel_p95']})",
-            f"vegetation_density_low={values['vegetation_density_low']:.3f} (< 0.25 dans la branche finale)",
+            f"Branche A obs_type==1: {_yn(branch_obs_type)} (obs_type={values['obs_type']})",
+            f"Branche B building_density>{cfg['seuil_building_density']}: {_yn(branch_density)} (building_density={values['building_density']:.3f})",
+            f"Branche C zrel_p95>{cfg['seuil_build_zrel_p95']}: {_yn(branch_height)} (zrel_p95={values['zrel_p95']:.2f})",
         ]
+
+        if branch_obs_type:
+            reason = "Build retenu car obs_type indique explicitement du bati."
+        elif branch_density:
+            reason = "Build retenu car la densite de bati depasse le seuil principal."
+        elif branch_height:
+            reason = "Build retenu via la signature de hauteur compatible avec du bati."
+        else:
+            reason = "Build retenu par la logique de priorite du pipeline (verifie les branchements ci-dessus)."
+
         return (
-            "Build retenu car la signature de bati est dominante autour du train.",
+            reason,
             checks,
         )
 
     if label == "open-sky":
         checks = [
             f"sky_mask_deg / smoothed={values['sky_mask_deg']:.2f} (< {cfg['seuil_ciel_ouvert']})",
-            f"occupation_ciel_azimuth_ratio={values['occupation_ciel_azimuth_ratio']:.3f} (< {cfg['seuil_occupation_ciel']})",
             f"obstacle_overhead_ratio={values['obstacle_overhead_ratio']:.3f} (< {cfg['seuil_overhead_bridge']})",
             f"building_density={values['building_density']:.3f} (< {cfg['seuil_building_density']})",
             f"veg_density={values['veg_density']:.3f} (< {cfg['seuil_vegetation']})",
-            f"density_near_0_5m={values['density_near_0_5m']:.3f} (< {cfg['seuil_open_sky_density_near_max']})",
-            f"density_far_15_30m={values['density_far_15_30m']:.3f} (< {cfg['seuil_open_sky_density_far_max']})",
             f"zrel_p95={values['zrel_p95']:.2f} (< {cfg['seuil_open_sky_zrel_p95_max']})",
-            f"zrel_std={values['zrel_std']:.2f} (< {cfg['seuil_open_sky_zrel_std_max']})",
         ]
         return (
             "Open-sky retenu car la zone autour de l'antenne reste peu obstruee.",
@@ -199,9 +208,8 @@ def explain_label_reason(row, params_cfg: dict | None = None) -> tuple[str, list
             f"obs_type={values['obs_type']} (= 3 ou 0 dans certaines branches mixed)",
             f"veg_density={values['veg_density']:.3f} (> {cfg['seuil_melange']} si obs_type=0)",
             f"building_density={values['building_density']:.3f} (> {cfg['seuil_mixed_building']})",
-            f"zrel_iqr={values['zrel_iqr']:.2f} (> {cfg['seuil_mixed_zrel_iqr']})",
-            f"zrel_std={values['zrel_std']:.2f} (> {cfg['seuil_mixed_zrel_std']})",
-            f"vegetation_density_mid={values['vegetation_density_mid']:.3f}",
+            f"zrel_p95={values['zrel_p95']:.2f}",
+            f"obstacle_overhead_ratio={values['obstacle_overhead_ratio']:.3f}",
         ]
         return (
             "Mixed retenu en fallback quand les signatures bati / vegetation coexistent sans dominance nette.",

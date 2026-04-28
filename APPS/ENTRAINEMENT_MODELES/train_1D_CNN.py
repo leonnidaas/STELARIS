@@ -1,4 +1,4 @@
-"""Bidirectional GRU training aligned with dataset/model registry utilities."""
+"""1D CNN training aligned with dataset/model registry utilities."""
 
 from __future__ import annotations
 
@@ -36,16 +36,15 @@ from utils import PARAMS_ENTRAINEMENT, TRAINING_DIR, get_dataset_path, get_model
 tf.config.optimizer.set_jit(False)
 
 
-HIDDEN_UNITS = 24 # 128
-DENSE_UNITS = 18 # 16
-ACTIVATION = tf.keras.layers.LeakyReLU(alpha=0.1)  # "relu" or "mish" (requires TF 2.9+), "tanh" also possible but less performant in tests
-RECURRENT_ACTIVATION = "sigmoid"
-DROPOUT = 0.3639 # 0.05
-KERNEL_REGULARIZER = keras.regularizers.l2(5e-3)
+CONV_FILTERS = (64, 128)
+KERNEL_SIZE = 5
+POOL_SIZE = 2
+DENSE_UNITS = 64
+DROPOUT = 0.15
 
 BATCH_SIZE = 128
 EPOCHS = 200
-INITIAL_LEARNING_RATE = 12e-4
+INITIAL_LEARNING_RATE = 1e-4
 EARLY_STOPPING_PATIENCE = 30
 
 
@@ -87,27 +86,29 @@ def build_model(
     sequence_length: int,
     input_dim: int,
     output_dim: int,
+    conv_filters: tuple[int, int],
+    kernel_size: int,
+    pool_size: int,
     dense_units: int,
-    hidden_units: int,
-    activation: str,
-    recurrent_activation: str,
     dropout: float,
-    kernel_regularizer,
 ) -> keras.Model:
-    """Build a bidirectional two-layer GRU classifier."""
-    gru_kwargs = dict(
-        activation=activation,
-        recurrent_activation=recurrent_activation,
-        kernel_regularizer=kernel_regularizer,
-        dropout=dropout,
-    )
-
+    """Build a compact 1D CNN classifier for temporal sequences."""
     model = Sequential(
         [
             layers.Input(shape=(sequence_length, input_dim)),
-            layers.Bidirectional(layers.GRU(hidden_units, return_sequences=True, **gru_kwargs)),
-            layers.Bidirectional(layers.GRU(hidden_units, return_sequences=False, **gru_kwargs)),
-            layers.Dense(dense_units, activation="mish"), # "relu" also possible but less performant in tests
+            layers.Conv1D(conv_filters[0], kernel_size=kernel_size, padding="same"),
+            layers.BatchNormalization(),
+            layers.LeakyReLU(negative_slope=0.1),
+            layers.MaxPooling1D(pool_size=pool_size),
+            layers.Dropout(dropout),
+            layers.Conv1D(conv_filters[1], kernel_size=kernel_size, padding="same"),
+            layers.BatchNormalization(),
+            layers.LeakyReLU(negative_slope=0.1),
+            layers.MaxPooling1D(pool_size=pool_size),
+            layers.Dropout(dropout),
+            layers.GlobalAveragePooling1D(),
+            layers.Dense(dense_units, activation="mish"),
+            layers.Dropout(dropout),
             layers.Dense(output_dim, activation="softmax"),
         ]
     )
@@ -124,7 +125,7 @@ def check_gpu() -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train GRU from preprocessed dataset pack.")
+    parser = argparse.ArgumentParser(description="Train 1D CNN from preprocessed dataset pack.")
     parser.add_argument("--dataset-name", type=str, default=None)
     parser.add_argument("--epochs", type=int, default=EPOCHS)
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
@@ -138,9 +139,12 @@ def main() -> None:
 
     dataset_name = _resolve_dataset_name(args.dataset_name)
     dataset_cfg = get_dataset_path(dataset_name)
+    data_npz_path = dataset_cfg.get("preprocessed_data_cnn")
+    if data_npz_path is None or not Path(data_npz_path).exists():
+        data_npz_path = dataset_cfg["preprocessed_data"]
 
     required = [
-        dataset_cfg["preprocessed_data"],
+        data_npz_path,
         dataset_cfg["metadata"],
         dataset_cfg["label_encoder_path"],
         dataset_cfg["scaler_param"],
@@ -152,7 +156,7 @@ def main() -> None:
     with open(dataset_cfg["metadata"], "r", encoding="utf-8") as f:
         dataset_meta = json.load(f)
 
-    data = np.load(dataset_cfg["preprocessed_data"], allow_pickle=True)
+    data = np.load(data_npz_path, allow_pickle=True)
     label_encoder = joblib.load(dataset_cfg["label_encoder_path"])
     scaler = joblib.load(dataset_cfg["scaler_param"])
 
@@ -187,7 +191,6 @@ def main() -> None:
     print(f"  X_tensor_test : {x_tensor_test.shape}")
     print(f"  Classes       : {list(label_encoder.classes_)}")
 
-    # Keep data in float32/int32 to reduce RAM pressure and conversion overhead.
     x_tensor_train = x_tensor_train.astype(np.float32, copy=False)
     x_tensor_test = x_tensor_test.astype(np.float32, copy=False)
     y_train = y_train.astype(np.int32, copy=False)
@@ -199,12 +202,11 @@ def main() -> None:
         sequence_length=sequence_length,
         input_dim=input_dim,
         output_dim=output_dim,
+        conv_filters=CONV_FILTERS,
+        kernel_size=KERNEL_SIZE,
+        pool_size=POOL_SIZE,
         dense_units=DENSE_UNITS,
-        hidden_units=HIDDEN_UNITS,
-        activation=ACTIVATION,
-        recurrent_activation=RECURRENT_ACTIVATION,
         dropout=DROPOUT,
-        kernel_regularizer=KERNEL_REGULARIZER,
     )
     model.summary()
 
@@ -281,21 +283,23 @@ def main() -> None:
     target_names_present = [label_encoder.classes_[i] for i in unique_labels_in_test]
 
     report_dict = classification_report(
-    y_test, 
-    y_pred, 
-    labels=unique_labels_in_test, 
-    target_names=target_names_present, 
-    output_dict=True)
+        y_test,
+        y_pred,
+        labels=unique_labels_in_test,
+        target_names=target_names_present,
+        output_dict=True,
+    )
     report_text = classification_report(
         y_test,
         y_pred,
         labels=unique_labels_in_test,
-        target_names=target_names_present)
+        target_names=target_names_present,
+    )
     cm = confusion_matrix(y_test, y_pred)
 
     print("\n[5/6] Saving model artefacts and registry ...")
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    model_paths = get_model_path("GRU", timestamp)
+    model_paths = get_model_path("CNN_1D", timestamp)
     model_dir = Path(model_paths["metadata"]).parent
 
     model_file = Path(model_paths["model_file"])
@@ -320,7 +324,7 @@ def main() -> None:
     fig, ax = plt.subplots(figsize=(7, 6))
     disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=label_encoder.classes_)
     disp.plot(ax=ax, xticks_rotation="vertical")
-    plt.title(f"GRU Test Confusion Matrix - bal_acc={bal_acc:.4f}")
+    plt.title(f"1D CNN Test Confusion Matrix - bal_acc={bal_acc:.4f}")
     plt.tight_layout()
     plt.savefig(cm_img_path, dpi=150)
     if args.show_plots:
@@ -370,17 +374,18 @@ def main() -> None:
 
     model_metadata = {
         "model_id": model_paths["id"],
-        "model_type": "gru",
+        "model_type": "cnn_1d",
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "dataset_id": dataset_name,
         "dataset_metadata": str(dataset_cfg["metadata"]),
+        "dataset_npz_used": str(data_npz_path),
         "features": feature_names,
         "window_size": dataset_meta.get("preprocessing", {}).get("window_size"),
         "hyperparameters": {
-            "hidden_units": HIDDEN_UNITS,
+            "conv_filters": list(CONV_FILTERS),
+            "kernel_size": KERNEL_SIZE,
+            "pool_size": POOL_SIZE,
             "dense_units": DENSE_UNITS,
-            "activation": ACTIVATION.__class__.__name__ if hasattr(ACTIVATION, '__class__') else ACTIVATION,
-            "recurrent_activation": RECURRENT_ACTIVATION,
             "dropout": DROPOUT,
             "batch_size": int(args.batch_size),
             "epochs": int(args.epochs),
@@ -434,3 +439,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+

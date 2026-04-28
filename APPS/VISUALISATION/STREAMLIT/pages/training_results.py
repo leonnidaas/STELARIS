@@ -15,6 +15,28 @@ from utils import MODELS_DIR, TRAINING_DIR
 st.set_page_config(page_title="Resultats entrainement", layout="wide", page_icon="📉")
 
 OVERFITTING_THRESHOLD = 0.10
+PINNED_DATASETS_FILE = TRAINING_DIR / ".training_results_pinned_datasets.json"
+
+MODEL_SPECS = {
+    "GRU": {
+        "display": "GRU",
+        "report_key": "gru",
+        "report_aliases": [],
+        "family": "keras",
+    },
+    "XGBOOST": {
+        "display": "XGBoost",
+        "report_key": "xgboost",
+        "report_aliases": ["xgb"],
+        "family": "xgb",
+    },
+    "CNN_1D": {
+        "display": "1D CNN",
+        "report_key": "cnn_1d",
+        "report_aliases": [],
+        "family": "keras",
+    },
+}
 
 
 @st.cache_data(show_spinner=False)
@@ -40,6 +62,79 @@ def _list_dataset_ids() -> list[str]:
         if meta_path.exists():
             dataset_ids.append(d.name)
     return dataset_ids
+
+
+def _load_pinned_dataset_ids() -> list[str]:
+    payload = _read_json(str(PINNED_DATASETS_FILE))
+    if not isinstance(payload, dict):
+        return []
+
+    pinned = payload.get("pinned", [])
+    if not isinstance(pinned, list):
+        return []
+
+    out: list[str] = []
+    for value in pinned:
+        if isinstance(value, str) and value and value not in out:
+            out.append(value)
+    return out
+
+
+def _save_pinned_dataset_ids(dataset_ids: list[str]) -> None:
+    payload = _read_json(str(PINNED_DATASETS_FILE))
+    aliases = payload.get("aliases", {}) if isinstance(payload, dict) else {}
+    if not isinstance(aliases, dict):
+        aliases = {}
+
+    PINNED_DATASETS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(PINNED_DATASETS_FILE, "w", encoding="utf-8") as f:
+        json.dump({"pinned": dataset_ids, "aliases": aliases}, f, indent=2)
+
+
+def _load_dataset_aliases() -> dict[str, str]:
+    payload = _read_json(str(PINNED_DATASETS_FILE))
+    if not isinstance(payload, dict):
+        return {}
+
+    aliases = payload.get("aliases", {})
+    if not isinstance(aliases, dict):
+        return {}
+
+    out: dict[str, str] = {}
+    for key, value in aliases.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        key = key.strip()
+        value = value.strip()
+        if key and value:
+            out[key] = value
+    return out
+
+
+def _save_dataset_aliases(aliases: dict[str, str]) -> None:
+    payload = _read_json(str(PINNED_DATASETS_FILE))
+    pinned = payload.get("pinned", []) if isinstance(payload, dict) else []
+    if not isinstance(pinned, list):
+        pinned = []
+
+    pinned_clean = [ds for ds in pinned if isinstance(ds, str) and ds]
+
+    PINNED_DATASETS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(PINNED_DATASETS_FILE, "w", encoding="utf-8") as f:
+        json.dump({"pinned": pinned_clean, "aliases": aliases}, f, indent=2)
+
+
+def _dataset_display_name(dataset_id: str, aliases: dict[str, str]) -> str:
+    alias = aliases.get(dataset_id, "").strip()
+    if alias:
+        return f"{alias} ({dataset_id})"
+    return dataset_id
+
+
+def _ordered_datasets(dataset_ids: list[str], pinned_ids: list[str]) -> list[str]:
+    pinned_present = [ds for ds in pinned_ids if ds in dataset_ids]
+    others = [ds for ds in dataset_ids if ds not in pinned_present]
+    return pinned_present + others
 
 
 @st.cache_data(show_spinner=False)
@@ -85,6 +180,24 @@ def _resolve_model_metadata(
         report_path = report.get("models", {}).get("xgb", {}).get("metadata_path")
 
     return _metadata_from_path(report_path)
+
+
+def _report_model_info(report: dict, model_kind: str) -> dict:
+    if not isinstance(report, dict):
+        return {}
+
+    models = report.get("models", {})
+    if not isinstance(models, dict):
+        return {}
+
+    spec = MODEL_SPECS.get(model_kind, {})
+    keys = [spec.get("report_key", model_kind.lower()), *spec.get("report_aliases", [])]
+    for key in keys:
+        info = models.get(key, {})
+        if isinstance(info, dict) and info:
+            return info
+
+    return {}
 
 
 @st.cache_data(show_spinner=False)
@@ -242,7 +355,7 @@ def _load_confusion_from_metadata(meta: dict) -> tuple[list[str], np.ndarray] | 
 
 
 @st.cache_data(show_spinner=False)
-def _load_gru_history(meta: dict) -> dict:
+def _load_keras_history(meta: dict) -> dict:
     artefacts = meta.get("artefacts", {})
     candidates = [
         artefacts.get("training_history_json"),
@@ -325,39 +438,80 @@ def _load_feature_importance_table(path: str) -> pd.DataFrame:
 
 
 def _comparison_metrics_table(report: dict) -> pd.DataFrame:
-    models = report.get("models", {})
     rows = []
 
-    for model_key in ("gru", "xgboost"):
-        info = models.get(model_key, {})
+    for model_kind, spec in MODEL_SPECS.items():
+        info = _report_model_info(report, model_kind)
         test_m = info.get("test", {})
-        if not test_m:
+        if not isinstance(test_m, dict) or not test_m:
             continue
-
         rows.append(
             {
-                "Modele": model_key.upper(),
-                "Accuracy": test_m.get("accuracy"),
-                "Balanced Accuracy": test_m.get("balanced_accuracy"),
-                "F1 Weighted": test_m.get("f1_weighted"),
-                "F1 Macro": test_m.get("f1_macro"),
-                "Cross Entropy": test_m.get("cross_entropy"),
-                "AUC Weighted": test_m.get("auc"),
+                "Modele": spec["display"],
+                "Accuracy": test_m.get("accuracy", np.nan),
+                "Balanced Accuracy": test_m.get("balanced_accuracy", np.nan),
+                "F1 Weighted": test_m.get("f1_weighted", np.nan),
+                "F1 Macro": test_m.get("f1_macro", np.nan),
+                "Cross Entropy": test_m.get("cross_entropy", np.nan),
+                "AUC Weighted": test_m.get("auc", np.nan),
             }
         )
-
-    if not rows:
-        return pd.DataFrame()
 
     return pd.DataFrame(rows)
 
 
+def _model_metrics_from_metadata(model_name: str, meta: dict) -> dict | None:
+    if not isinstance(meta, dict) or not meta:
+        return None
+    test_m = meta.get("metrics_test", {})
+    if not isinstance(test_m, dict) or not test_m:
+        return None
+
+    return {
+        "Modele": model_name,
+        "Accuracy": test_m.get("accuracy", np.nan),
+        "Balanced Accuracy": test_m.get("balanced_accuracy", np.nan),
+        "F1 Weighted": test_m.get("f1_weighted", np.nan),
+        "F1 Macro": test_m.get("f1_macro", np.nan),
+        "Cross Entropy": test_m.get("cross_entropy", np.nan),
+        "AUC Weighted": test_m.get("auc", np.nan),
+    }
+
+
+def _classification_report_from_metadata(meta: dict) -> dict:
+    if not isinstance(meta, dict) or not meta:
+        return {}
+    artefacts = meta.get("artefacts", {}) if isinstance(meta.get("artefacts", {}), dict) else {}
+    report_path = artefacts.get("classification_report_json")
+    if not report_path:
+        return {}
+    payload = _read_json(str(report_path))
+    return payload if isinstance(payload, dict) else {}
+
+
+def _report_table_or_nan(report_dict: dict) -> pd.DataFrame:
+    df = _report_table(report_dict)
+    if not df.empty:
+        return df
+
+    return pd.DataFrame(
+        [
+            {
+                "Classe": np.nan,
+                "Precision": np.nan,
+                "Recall": np.nan,
+                "F1": np.nan,
+                "Support": np.nan,
+            }
+        ]
+    )
+
+
 def _overfitting_rows(report: dict) -> list[dict]:
     rows: list[dict] = []
-    models = report.get("models", {})
 
-    for model_key in ("gru", "xgboost"):
-        info = models.get(model_key, {})
+    for model_kind, spec in MODEL_SPECS.items():
+        info = _report_model_info(report, model_kind)
         train_m = info.get("train", {})
         test_m = info.get("test", {})
         if not train_m or not test_m:
@@ -369,7 +523,7 @@ def _overfitting_rows(report: dict) -> list[dict]:
 
         rows.append(
             {
-                "Modele": model_key.upper(),
+                "Modele": spec["display"],
                 "Delta Accuracy": delta_acc,
                 "Delta F1 Weighted": delta_f1,
                 "Surentrainement": "Oui" if overfit else "Non",
@@ -547,22 +701,115 @@ def render_page() -> None:
         st.warning("Aucun dataset detecte dans DATA/03_TRAINING.")
         st.stop()
 
+    pinned_ids = _load_pinned_dataset_ids()
+    aliases = _load_dataset_aliases()
+    datasets_ordered = _ordered_datasets(datasets, pinned_ids)
+
     default_dataset = datasets[-1]
-    dataset_id = st.sidebar.selectbox("Dataset", datasets, index=len(datasets) - 1)
+    preferred_dataset = st.session_state.get("training_results_dataset_id")
+    if not preferred_dataset or preferred_dataset not in datasets_ordered:
+        if pinned_ids and pinned_ids[0] in datasets_ordered:
+            preferred_dataset = pinned_ids[0]
+        else:
+            preferred_dataset = default_dataset
+
+    selected_index = datasets_ordered.index(preferred_dataset)
+    dataset_id = st.sidebar.selectbox(
+        "Dataset",
+        datasets_ordered,
+        index=selected_index,
+        format_func=lambda ds: _dataset_display_name(ds, aliases),
+    )
+    st.session_state["training_results_dataset_id"] = dataset_id
+
+    with st.sidebar.expander("Acces rapide datasets", expanded=True):
+        c1, c2 = st.columns(2)
+        if c1.button("Remonter", width="stretch"):
+            new_pinned = [dataset_id] + [ds for ds in pinned_ids if ds != dataset_id]
+            _save_pinned_dataset_ids(new_pinned)
+            st.rerun()
+        if c2.button("Retirer", width="stretch"):
+            new_pinned = [ds for ds in pinned_ids if ds != dataset_id]
+            _save_pinned_dataset_ids(new_pinned)
+            st.rerun()
+
+        current_alias = aliases.get(dataset_id, "")
+        alias_key = f"rename_dataset_alias_{dataset_id}"
+        st.text_input(
+            "Nom d'affichage",
+            value=current_alias,
+            key=alias_key,
+            placeholder="Ex: AGONAC no coverage run",
+        )
+
+        c3, c4 = st.columns(2)
+        if c3.button("Renommer", width="stretch"):
+            new_alias = str(st.session_state.get(alias_key, "")).strip()
+            new_aliases = dict(aliases)
+            if new_alias:
+                new_aliases[dataset_id] = new_alias
+            else:
+                new_aliases.pop(dataset_id, None)
+            _save_dataset_aliases(new_aliases)
+            st.rerun()
+
+        if c4.button("Supprimer nom", width="stretch"):
+            new_aliases = dict(aliases)
+            new_aliases.pop(dataset_id, None)
+            _save_dataset_aliases(new_aliases)
+            st.rerun()
+
+        if pinned_ids:
+            st.caption("Datasets remontes (ordre prioritaire):")
+            for ds in pinned_ids:
+                if ds in datasets:
+                    st.write(f"- {_dataset_display_name(ds, aliases)}")
+        else:
+            st.caption("Aucun dataset remonte pour le moment.")
 
     if dataset_id != default_dataset:
-        st.caption(f"Dataset selectionne: {dataset_id}")
+        st.caption(f"Dataset selectionne: {_dataset_display_name(dataset_id, aliases)}")
 
     report_path, report = _latest_comparison_report(dataset_id)
     optuna_path, optuna_payload = _load_optuna_best_params(dataset_id)
     gru_meta_path, gru_meta = _resolve_model_metadata("GRU", dataset_id, report)
     xgb_meta_path, xgb_meta = _resolve_model_metadata("XGBOOST", dataset_id, report)
+    cnn_meta_path, cnn_meta = _resolve_model_metadata("CNN_1D", dataset_id, report)
 
-    header_cols = st.columns(4)
-    header_cols[0].metric("Dataset", dataset_id)
+    model_meta_map = {
+        "GRU": (gru_meta_path, gru_meta),
+        "XGBOOST": (xgb_meta_path, xgb_meta),
+        "CNN_1D": (cnn_meta_path, cnn_meta),
+    }
+    available_model_kinds = [k for k, (_, m) in model_meta_map.items() if isinstance(m, dict) and bool(m)]
+
+    if "training_results_models" not in st.session_state:
+        st.session_state["training_results_models"] = available_model_kinds[:]
+    else:
+        kept = [m for m in st.session_state["training_results_models"] if m in MODEL_SPECS]
+        if available_model_kinds and not kept:
+            kept = available_model_kinds[:]
+        st.session_state["training_results_models"] = kept
+
+    selected_model_kinds = st.sidebar.multiselect(
+        "Modeles a analyser",
+        options=list(MODEL_SPECS.keys()),
+        default=st.session_state["training_results_models"],
+        format_func=lambda m: MODEL_SPECS[m]["display"],
+        help="Selectionnez 1, 2 ou 3 modeles pour une analyse independante.",
+    )
+    st.session_state["training_results_models"] = selected_model_kinds
+
+    if not selected_model_kinds:
+        st.warning("Selectionnez au moins un modele dans la barre laterale.")
+        st.stop()
+
+    header_cols = st.columns(5)
+    header_cols[0].metric("Dataset", _dataset_display_name(dataset_id, aliases))
     header_cols[1].metric("Rapport comparaison", "Oui" if report else "Non")
     header_cols[2].metric("Modele GRU", "Oui" if gru_meta else "Non")
     header_cols[3].metric("Modele XGBoost", "Oui" if xgb_meta else "Non")
+    header_cols[4].metric("Modele 1D CNN", "Oui" if cnn_meta else "Non")
 
     with st.expander("Sources chargees", expanded=False):
         st.write({
@@ -570,32 +817,35 @@ def render_page() -> None:
             "optuna_best_params": str(optuna_path) if optuna_path else None,
             "gru_metadata": str(gru_meta_path) if gru_meta_path else None,
             "xgb_metadata": str(xgb_meta_path) if xgb_meta_path else None,
+            "cnn_1d_metadata": str(cnn_meta_path) if cnn_meta_path else None,
         })
 
     st.subheader("Dataset preprocesse")
     preproc = _load_preprocessed_dataset_summary(dataset_id)
     preproc_meta = preproc.get("metadata", {})
     preproc_counts = preproc.get("counts", {})
-
+    preproc_settings = preproc_meta.get("preprocessing", {})
+    
     info_cols = st.columns(5)
     info_cols[0].metric("Train (total)", str(preproc_counts.get("n_train_total", "N/A")))
     info_cols[1].metric("Train (inner)", str(preproc_counts.get("n_train_inner", "N/A")))
-    info_cols[2].metric("Val", str(preproc_counts.get("n_val", "N/A")))
-    info_cols[3].metric("Test", str(preproc_counts.get("n_test", "N/A")))
+    val_ratio = preproc_settings.get("val_split_ratio")
+    test_ratio = preproc_settings.get("test_split_ratio")
+    val_label = f"Val ({float(val_ratio) * 100:.0f}%)" if val_ratio is not None else "Val"
+    test_label = f"Test ({float(test_ratio) * 100:.0f}%)" if test_ratio is not None else "Test"
+    info_cols[2].metric(val_label, str(preproc_counts.get("n_val", "N/A")))
+    info_cols[3].metric(test_label, str(preproc_counts.get("n_test", "N/A")))
     info_cols[4].metric("Features", str(preproc_counts.get("n_features", "N/A")))
 
     if preproc_meta:
         source_data = preproc_meta.get("source_data", {})
         prep_cfg = preproc_meta.get("preprocessing", {})
-        st.caption(
-            "Trajets: "
-            f"{len(source_data.get('trajets', []))} | "
-            f"Rows brutes: {source_data.get('total_rows', 'N/A')} | "
-            f"Rows apres filtres: {source_data.get('total_rows_after_filters', 'N/A')} | "
-            f"Rows apres stride: {source_data.get('total_rows_after_stride', 'N/A')} | "
-            f"window_size: {prep_cfg.get('window_size', 'N/A')}"
-        )
-
+        info_cols[0].metric("Scénarios" , str(len(source_data.get("trajets", []))))
+        info_cols[1].metric("Rows brutes", str(source_data.get("total_rows", "N/A")))
+        info_cols[2].metric("Rows apres filtres", str(source_data.get("total_rows_after_filters", "N/A")))
+        info_cols[3].metric("Rows apres stride", str(source_data.get("total_rows_after_stride", "N/A")))
+        info_cols[4].metric("Window size", str(prep_cfg.get("window_size", "N/A"))) 
+        
     class_balance_df = _class_balance_table(preproc.get("class_balance", {}))
     if class_balance_df.empty:
         st.info("Impossible de charger la distribution des classes depuis le dataset preprocesse.")
@@ -630,58 +880,81 @@ def render_page() -> None:
     else:
         st.info("Aucun resultat Optuna trouve pour ce dataset (gru_optuna_best_params.json absent).")
 
-    st.subheader("Courbes d'entrainement (GRU)")
-    gru_history_payload = _load_gru_history(gru_meta)
-    if gru_history_payload:
-        _plot_history(gru_history_payload)
-    else:
-        st.info(
-            "Historique introuvable. Lancez un nouvel entrainement GRU (la sauvegarde training_history.json est maintenant automatique)."
+    keras_models_selected = [m for m in selected_model_kinds if MODEL_SPECS[m]["family"] == "keras"]
+    if keras_models_selected:
+        st.subheader("Courbes d'entrainement (modeles Keras)")
+        for model_kind in keras_models_selected:
+            _, model_meta = model_meta_map[model_kind]
+            st.markdown(f"**{MODEL_SPECS[model_kind]['display']}**")
+            history_payload = _load_keras_history(model_meta)
+            if history_payload:
+                _plot_history(history_payload)
+            else:
+                st.info(
+                    f"Historique introuvable pour {MODEL_SPECS[model_kind]['display']}."
+                )
+
+    if "XGBOOST" in selected_model_kinds:
+        st.subheader("Courbes d'entrainement et surapprentissage (XGBoost)")
+        xgb_history_payload = _load_xgb_history(
+            xgb_meta,
+            str(xgb_meta_path) if xgb_meta_path else None,
         )
+        if xgb_history_payload:
+            _plot_xgb_history(xgb_history_payload)
+        else:
+            st.info(
+                "Historique XGBoost introuvable. Lancez un nouvel entrainement XGBoost pour generer xgboost_training_history.json."
+            )
 
-    st.subheader("Courbes d'entrainement et surapprentissage (XGBoost)")
-    xgb_history_payload = _load_xgb_history(
-        xgb_meta,
-        str(xgb_meta_path) if xgb_meta_path else None,
-    )
-    if xgb_history_payload:
-        _plot_xgb_history(xgb_history_payload)
-    else:
-        st.info(
-            "Historique XGBoost introuvable. Lancez un nouvel entrainement XGBoost pour generer xgboost_training_history.json."
-        )
+        st.subheader("Feature importances (XGBoost)")
+        xgb_imp_png, xgb_imp_json = _resolve_xgb_importance_paths(xgb_meta)
 
-    st.subheader("Feature importances (XGBoost)")
-    xgb_imp_png, xgb_imp_json = _resolve_xgb_importance_paths(xgb_meta)
+        if xgb_imp_png is not None:
+            st.image(str(xgb_imp_png), caption="Feature importance XGBoost", width="stretch")
 
-    if xgb_imp_png is not None:
-        st.image(str(xgb_imp_png), caption="Feature importance XGBoost", use_container_width=True)
+        if xgb_imp_json is not None:
+            imp_df = _load_feature_importance_table(str(xgb_imp_json))
+            if not imp_df.empty:
+                st.dataframe(imp_df, width="stretch", hide_index=True)
+        elif isinstance(xgb_meta, dict) and xgb_meta.get("features"):
+            st.caption("Importance numerique indisponible pour cet ancien run, mais la liste des features est presente.")
+            st.dataframe(
+                pd.DataFrame({"feature": [str(v) for v in xgb_meta.get("features", [])]}),
+                width="stretch",
+                hide_index=True,
+            )
 
-    if xgb_imp_json is not None:
-        imp_df = _load_feature_importance_table(str(xgb_imp_json))
-        if not imp_df.empty:
-            st.dataframe(imp_df, width="stretch", hide_index=True)
-    elif isinstance(xgb_meta, dict) and xgb_meta.get("features"):
-        st.caption("Importance numerique indisponible pour cet ancien run, mais la liste des features est presente.")
-        st.dataframe(
-            pd.DataFrame({"feature": [str(v) for v in xgb_meta.get("features", [])]}),
-            width="stretch",
-            hide_index=True,
-        )
-
-    if xgb_imp_png is None and xgb_imp_json is None:
-        st.info("Feature importances XGBoost introuvables pour ce dataset.")
+        if xgb_imp_png is None and xgb_imp_json is None:
+            st.info("Feature importances XGBoost introuvables pour ce dataset.")
 
     st.divider()
     st.subheader("Metriques de performance")
 
     metrics_df = _comparison_metrics_table(report)
+    st.info(f'{metrics_df}')
+    if metrics_df.empty:
+        fallback_rows = []
+        for model_kind, (_, model_meta) in model_meta_map.items():
+            row = _model_metrics_from_metadata(MODEL_SPECS[model_kind]["display"], model_meta)
+            if row is not None:
+                fallback_rows.append(row)
+        metrics_df = pd.DataFrame(fallback_rows)
+
     if not metrics_df.empty:
-        st.dataframe(metrics_df, width="stretch", hide_index=True)
+        allowed = {MODEL_SPECS[m]["display"] for m in selected_model_kinds}
+
+        metrics_df = metrics_df[metrics_df["Modele"].isin(allowed)].reset_index(drop=True)
+
+    if metrics_df.empty:
+        st.info("Aucune metrique disponible pour ce dataset (entraine au moins un modele GRU ou XGBoost).")
     else:
-        st.warning("Aucune metrique de comparaison disponible pour ce dataset.")
+        st.dataframe(metrics_df, width="stretch", hide_index=True)
 
     overfit_rows = _overfitting_rows(report)
+    if overfit_rows:
+        allowed = {MODEL_SPECS[m]["display"] for m in selected_model_kinds}
+        overfit_rows = [r for r in overfit_rows if r.get("Modele") in allowed]
     if overfit_rows:
         st.markdown("**Analyse surentrainement (train vs test)**")
         st.dataframe(pd.DataFrame(overfit_rows), width="stretch", hide_index=True)
@@ -690,46 +963,31 @@ def render_page() -> None:
     st.subheader("Matrices de confusion")
     normalize_cm = st.checkbox("Normaliser les matrices par ligne", value=False)
 
-    cm_cols = st.columns(2)
-    gru_cm = _load_confusion_from_metadata(gru_meta)
-    xgb_cm = _load_confusion_from_metadata(xgb_meta)
-
-    with cm_cols[0]:
-        if gru_cm is None:
-            st.info("Matrice GRU introuvable.")
-        else:
-            labels, matrix = gru_cm
-            _plot_confusion_matrix("GRU - Test", labels, matrix, normalize=normalize_cm)
-
-    with cm_cols[1]:
-        if xgb_cm is None:
-            st.info("Matrice XGBoost introuvable.")
-        else:
-            labels, matrix = xgb_cm
-            _plot_confusion_matrix("XGBoost - Test", labels, matrix, normalize=normalize_cm)
+    selected_pairs = [(m, model_meta_map[m][1]) for m in selected_model_kinds]
+    cm_cols = st.columns(max(1, len(selected_pairs)))
+    for idx, (model_kind, model_meta) in enumerate(selected_pairs):
+        with cm_cols[idx]:
+            cm = _load_confusion_from_metadata(model_meta)
+            model_label = MODEL_SPECS[model_kind]["display"]
+            if cm is None:
+                st.info(f"Matrice {model_label} introuvable.")
+            else:
+                labels, matrix = cm
+                _plot_confusion_matrix(f"{model_label} - Test", labels, matrix, normalize=normalize_cm)
 
     st.divider()
     st.subheader("Classification reports (test)")
-    rep_cols = st.columns(2)
+    rep_cols = st.columns(max(1, len(selected_pairs)))
+    for idx, (model_kind, model_meta) in enumerate(selected_pairs):
+        with rep_cols[idx]:
+            model_label = MODEL_SPECS[model_kind]["display"]
+            report_info = _report_model_info(report, model_kind)
+            model_report = report_info.get("classification_report_test", {})
+            if not model_report:
+                model_report = _classification_report_from_metadata(model_meta)
 
-    gru_report = report.get("models", {}).get("gru", {}).get("classification_report_test", {})
-    xgb_report = report.get("models", {}).get("xgboost", {}).get("classification_report_test", {})
-
-    with rep_cols[0]:
-        st.markdown("**GRU**")
-        df_gru = _report_table(gru_report)
-        if df_gru.empty:
-            st.info("Rapport GRU indisponible.")
-        else:
-            st.dataframe(df_gru, width="stretch", hide_index=True)
-
-    with rep_cols[1]:
-        st.markdown("**XGBoost**")
-        df_xgb = _report_table(xgb_report)
-        if df_xgb.empty:
-            st.info("Rapport XGBoost indisponible.")
-        else:
-            st.dataframe(df_xgb, width="stretch", hide_index=True)
+            st.markdown(f"**{model_label}**")
+            st.dataframe(_report_table_or_nan(model_report), width="stretch", hide_index=True)
 
 
 render_page()

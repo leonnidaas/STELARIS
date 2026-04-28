@@ -98,10 +98,11 @@ params_labelisation:
 #-----ENTRAINEMENT MODELES-----
 params_entrainement:
   test_size: 0.2
-  val_size: 0.0
+  val_size: 0.1
   random_state_split: 42
   random_state_val: 123
   segment_length_m : 2000.0
+  
 
 column_mapping:
   latitude:

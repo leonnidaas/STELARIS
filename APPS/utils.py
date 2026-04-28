@@ -60,6 +60,15 @@ GRILLE_ALTITUDE_DIR = RAW_DIR / Path(
 LIDAR_DIR = RAW_DIR / Path(_get_cfg("lidar_dir_relpath", "IGN/TUILES_LIDAR_HD"))
 
 MODELS_DIR = ROOT_PATH / _get_cfg("models_dir", "MODELS")
+GRU_MODELS_DIR = MODELS_DIR / "GRU"
+XGBOOST_MODELS_DIR = MODELS_DIR / "XGBOOST"
+CNN_1D_MODELS_DIR = MODELS_DIR / "CNN_1D"
+
+MODEL_DIRS = {
+    "GRU": GRU_MODELS_DIR,
+    "XGBOOST": XGBOOST_MODELS_DIR,
+    "CNN_1D": CNN_1D_MODELS_DIR,
+}
 long_col = _get_cfg("long_col", "longitude")
 lat_col = _get_cfg("lat_col", "latitude")
 
@@ -178,15 +187,20 @@ def iter_scenario_dirs(root_dir: Path) -> list[Path]:
         if not child.is_dir():
             continue
 
-        # Layout plat: GROUNDTRUTH/SCENARIO
-        if "__" in child.name:
-            scenario_dirs.append(child)
+        # Ignore explicit technical directories if present at root level.
+        if child.name.startswith("_"):
             continue
 
-        # Layout par ligne: GROUNDTRUTH/LINE/SCENARIO
-        for sub in child.iterdir():
-            if sub.is_dir() and "__" in sub.name:
-                scenario_dirs.append(sub)
+        # Layout par ligne: ROOT/LINE/SCENARIO (SCENARIO can have any naming pattern).
+        subdirs = [sub for sub in child.iterdir() if sub.is_dir()]
+        if subdirs:
+            nested_with_double_underscore = [sub for sub in subdirs if "__" in sub.name]
+            if nested_with_double_underscore:
+                scenario_dirs.extend(nested_with_double_underscore)
+                continue
+
+        # Layout plat: ROOT/SCENARIO (also supports names like MARTINE_01, AUTRE_TRAJET, ...).
+        scenario_dirs.append(child)
 
     return sorted(scenario_dirs)
 
@@ -200,6 +214,13 @@ def iter_gt_scenario_dirs(gt_root: Path | None = None) -> list[Path]:
 def list_traj_ids() -> list[str]:
     """Liste les IDs de trajets disponibles dans GROUNDTRUTH."""
     return [p.name for p in iter_gt_scenario_dirs(GT_DIR)]
+
+
+def list_rinex_traj_ids() -> list[str]:
+    """Liste les IDs de trajets disposant a la fois d'un dossier OBS et NAV."""
+    obs_ids = {p.name for p in iter_scenario_dirs(GNSS_OBS)}
+    nav_ids = {p.name for p in iter_scenario_dirs(GNSS_NAV)}
+    return sorted(obs_ids & nav_ids)
 
 
 def _find_traj_dir(base_dir: Path, traj_id: str) -> Path | None:
@@ -409,6 +430,9 @@ def get_traj_paths(traj_id: str):
         "fusion_features_csv": interim_fusion_dir / f"fusion_gt_gnss_lidar_features_{traj_id}.csv",
         "final_fusion_csv": processed_fusion_dir / f"fusion_finale_gnss_lidar_gt_label_{traj_id}.csv",
         "final_fusion_osm_csv": processed_fusion_dir / f"fusion_finale_gnss_osm_gt_label_{traj_id}.csv",
+        "inference_dir": traj_processed_file / "inference",
+        "inference_latest_csv": traj_processed_file / "inference" / f"{traj_id}_latest_inference.csv",
+        "inference_latest_json": traj_processed_file / "inference" / f"{traj_id}_latest_inference_dataset.json",
         "labels_plus_features_csv": interim_ign_dir / f"features_lidar_plus_labels_{traj_id}.csv",
         #LIDAR
         "lidar_features_csv": interim_ign_dir / f"features_lidar_{traj_id}.csv",
@@ -427,7 +451,7 @@ def get_model_path(model_name: str, timestamp: str) -> dict[str, Path]:
       en utilisant les conventions de nommage. Par la suite on pourait faire un script qui scan les json pour retouver les modèles avec des param spécifiques.
       sortie  :
       {id : model_id,
-       model_file: <chemin du fichier de poids et de parametres> .keras pour le GRU, .json pour le XGBoost,
+    model_file: <chemin du fichier de poids et de parametres> .keras pour le GRU/CNN_1D, .json pour le XGBoost,
        features: <chemin du fichier de features utilisées pour entrainer le modèle>
        scaler : <chemin du fichier du scaler utilisé pour entrainer le modèle>
        metadonnees: <chemin du fichier de metadonnees du modèle (date de creation, score, etc, id du dataset utilisé.)>
@@ -435,12 +459,14 @@ def get_model_path(model_name: str, timestamp: str) -> dict[str, Path]:
        
        }"""
     model_id = f"{model_name}_{timestamp}"
-    model_name_dir = MODELS_DIR / model_name
+    model_name_upper = str(model_name).upper()
+    model_name_dir = MODEL_DIRS.get(model_name_upper, MODELS_DIR / model_name)
     model_name_dir.mkdir(parents=True, exist_ok=True)
     model_dir = model_name_dir / model_id
     model_dir.mkdir(parents=True, exist_ok=True)
 
-    model_file = model_dir / f"{model_id}.keras"
+    extension = ".json" if model_name_upper == "XGBOOST" else ".keras"
+    model_file = model_dir / f"{model_id}{extension}"
     features_file = model_dir / f"{model_id}_features.csv"
     scaler_file = model_dir / f"{model_id}_scaler.pkl"
     metadonnees_file = model_dir / f"{model_id}_metadonnees.json"
@@ -467,6 +493,7 @@ def get_dataset_path(dataset_name: str) -> dict[str, Path]:
     classes_param_path = dataset_dir / f"{dataset_name}_classes_param.npy"
     scaler_param_path = dataset_dir / f"{dataset_name}_scaler.pkl"
     preprocessed_data_path = dataset_dir / f"{dataset_name}_preprocessed_data.npz"
+    preprocessed_data_cnn_path = dataset_dir / f"{dataset_name}_preprocessed_data_cnn.npz"
     metadata_file = dataset_dir / f"{dataset_name}_metadata.json"
     label_encoder = dataset_dir / f"{dataset_name}_label_encoder.pkl"
     return {
@@ -475,6 +502,29 @@ def get_dataset_path(dataset_name: str) -> dict[str, Path]:
         "classes_param": classes_param_path,
         "scaler_param": scaler_param_path,
         "preprocessed_data": preprocessed_data_path,
+        "preprocessed_data_cnn": preprocessed_data_cnn_path,
         "label_encoder_path": label_encoder,
         "metadata": metadata_file,
     }
+
+
+MODEL_SPECS = {
+    "GRU": {
+        "display": "GRU",
+        "report_key": "gru",
+        "report_aliases": [],
+        "family": "keras",
+    },
+    "XGBOOST": {
+        "display": "XGBoost",
+        "report_key": "xgboost",
+        "report_aliases": ["xgb"],
+        "family": "xgb",
+    },
+    "CNN_1D": {
+        "display": "1D CNN",
+        "report_key": "cnn_1d",
+        "report_aliases": [],
+        "family": "keras",
+    },
+}

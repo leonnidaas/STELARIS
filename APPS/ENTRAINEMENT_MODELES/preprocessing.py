@@ -35,11 +35,130 @@ R_TEST = float(PARAMS_ENTRAINEMENT.get("test_size", 0.2))
 R_VAL = float(PARAMS_ENTRAINEMENT.get("val_size", 0.1))
 RANDOM_STATE_SPLIT = int(PARAMS_ENTRAINEMENT.get("random_state_split", 42))
 RANDOM_STATE_VAL = int(PARAMS_ENTRAINEMENT.get("random_state_val", 123))
-SEGMENT_LENGTH_M = float(PARAMS_ENTRAINEMENT.get("segment_length_m", 2000.0))
-SPEED_THRESHOLD_MPS = float(PARAMS_ENTRAINEMENT.get("speed_threshold_mps", 0.5))
+SEGMENT_LENGTH_M = float(PARAMS_ENTRAINEMENT.get("segment_length_m", 5000.0))
+SPEED_THRESHOLD_MPS = float(PARAMS_ENTRAINEMENT.get("speed_threshold_mps", 5))
 STATIONARY_KEEP_SECONDS = float(PARAMS_ENTRAINEMENT.get("stationary_keep_seconds", 30.0))
 STATIONARY_KEEP_ROWS = int(PARAMS_ENTRAINEMENT.get("stationary_keep_rows", 30))
 LAST_SEGMENT_MIN_LENGTH_M = float(PARAMS_ENTRAINEMENT.get("last_segment_min_length_m", 500.0))
+
+
+def _load_json_file_safe(path: Path) -> tuple[dict | None, str | None]:
+    """Load JSON payload and return (data, error_message)."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return None, "json_not_object"
+        return data, None
+    except Exception as e:
+        return None, str(e)
+
+
+def _find_latest_labelisation_payload(
+    json_dir: Path,
+    traj_id: str,
+    source: str,
+) -> tuple[Path | None, dict | None, str | None]:
+    """Find and load latest labelisation params payload for one source/traj."""
+    if not json_dir.exists() or not json_dir.is_dir():
+        return None, None, "missing_json_dir"
+
+    exact_latest = json_dir / f"params_pipeline_labelisation_{source}_{traj_id}_latest.json"
+    candidates = [exact_latest] if exact_latest.exists() else []
+    if not candidates:
+        pattern = f"params_pipeline_labelisation_{source}_{traj_id}_*_latest.json"
+        candidates = sorted(json_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+
+    if not candidates:
+        return None, None, "missing_latest_file"
+
+    payload_path = candidates[0]
+    payload, load_error = _load_json_file_safe(payload_path)
+    return payload_path, payload, load_error
+
+
+def _extract_min_elevation_angle(payload: dict | None) -> float | None:
+    if not isinstance(payload, dict):
+        return None
+
+    extract_cfg = payload.get("extract_features_lidar_labelisation", {})
+    if isinstance(extract_cfg, dict):
+        value = extract_cfg.get("min_elevation_angle_deg")
+        if value is not None:
+            try:
+                return float(value)
+            except Exception:
+                return None
+
+    pipeline_opts = payload.get("pipeline_options", {})
+    if isinstance(pipeline_opts, dict):
+        value = pipeline_opts.get("min_elevation_angle_deg")
+        if value is not None:
+            try:
+                return float(value)
+            except Exception:
+                return None
+
+    return None
+
+
+def _extract_relevant_labelisation_thresholds(payload: dict | None) -> dict[str, float]:
+    """Keep only vegetation/building related threshold keys from params_labelisation."""
+    if not isinstance(payload, dict):
+        return {}
+
+    params = payload.get("labellisation", {}).get("params_labelisation", {})
+    if not isinstance(params, dict):
+        return {}
+
+    keep_tokens = ("veg", "veget", "canopee", "tree", "build", "building", "bat")
+    filtered: dict[str, float] = {}
+
+    for key, value in params.items():
+        key_str = str(key)
+        key_low = key_str.lower()
+        if not key_low.startswith("seuil"):
+            continue
+        if not any(token in key_low for token in keep_tokens):
+            continue
+        try:
+            filtered[key_str] = float(value)
+        except Exception:
+            continue
+
+    return dict(sorted(filtered.items(), key=lambda kv: kv[0]))
+
+
+def _collect_labelisation_runs_metadata_for_traj(traj_id: str, traj_paths: dict) -> dict:
+    """Collect run-parameter metadata for available labelisation sources."""
+    by_source = {}
+    source_dirs = {
+        "IGN": Path(traj_paths["interim_ign_dir"]) / "json",
+        "OSM": Path(traj_paths["interim_osm_dir"]) / "json",
+    }
+
+    for source, json_dir in source_dirs.items():
+        payload_path, payload, load_error = _find_latest_labelisation_payload(
+            json_dir=json_dir,
+            traj_id=traj_id,
+            source=source,
+        )
+
+        min_elev = _extract_min_elevation_angle(payload)
+        relevant_thresholds = _extract_relevant_labelisation_thresholds(payload)
+
+        by_source[source] = {
+            "latest_params_path": str(payload_path) if payload_path is not None else None,
+            "min_elevation_angle_deg": min_elev,
+            "seuils_labelisation_vegetation_bati_relatifs": relevant_thresholds,
+            "timestamp": payload.get("timestamp") if isinstance(payload, dict) else None,
+            "load_error": load_error,
+        }
+
+    return {
+        "data_file": str(traj_paths[DATA_SET_NAME]),
+        "by_source": by_source,
+    }
 
 
 def _downsample_stationary_rows(
@@ -67,7 +186,7 @@ def _downsample_stationary_rows(
         sub = df.iloc[idx].sort_values("gps_millis", kind="stable")
         sub_idx = sub.index.values
 
-        s = pd.to_numeric(sub["__speed_mps"], errors="coerce").values.astype(np.float64)
+        s = abs(pd.to_numeric(sub["__speed_mps"], errors="coerce").values.astype(np.float64))
         t = pd.to_numeric(sub["gps_millis"], errors="coerce").values.astype(np.float64) * 1e-3
 
         last_kept_time = -np.inf
@@ -195,9 +314,10 @@ def create_sequences_centered(
     return np.array(windows)
 
 
-def get_data(traj_id_list: list[str]) -> pd.DataFrame:
-    """Load and concatenate data from final fusion CSVs with trajectory id."""
+def get_data(traj_id_list: list[str]) -> tuple[pd.DataFrame, dict[str, dict]]:
+    """Load data and collect per-traj labelisation metadata."""
     df_features = pd.DataFrame()
+    labelisation_runs_by_traj: dict[str, dict] = {}
     for traj_id in traj_id_list:
         traj_paths = get_traj_paths(traj_id)
         data_file = traj_paths[DATA_SET_NAME]
@@ -207,7 +327,8 @@ def get_data(traj_id_list: list[str]) -> pd.DataFrame:
         
         df_i["__trajet_id"] = traj_id
         df_features = pd.concat([df_features, df_i], ignore_index=True)
-    return df_features
+        labelisation_runs_by_traj[traj_id] = _collect_labelisation_runs_metadata_for_traj(traj_id, traj_paths)
+    return df_features, labelisation_runs_by_traj
 
 
 def _sanitize_feature_names(feature_names: list[str]) -> tuple[list[str], list[str]]:
@@ -319,6 +440,7 @@ def _save_preprocessing_metadata(
     stationary_keep_seconds: float,
     stationary_keep_rows: int,
     last_segment_min_length_m: float,
+    labelisation_runs_by_traj: dict[str, dict],
     artefacts: dict[str, str],
 ) -> None:
     metadata = {
@@ -343,6 +465,7 @@ def _save_preprocessing_metadata(
         },
         "source_data": {
             "trajets": traj_id_list,
+            "labelisation_runs": labelisation_runs_by_traj,
             "total_rows": int(total_rows_raw),
             "total_rows_after_filters": int(total_rows_after_filters),
             "total_rows_after_stride": int(total_rows_after_stride),
@@ -368,6 +491,7 @@ def main(
         window_size: int,
         stride: int,
         test_split_ratio: float,
+    val_split_ratio: float,
         shuffle: bool,
         segment_length_m: float,
         speed_threshold_mps: float,
@@ -382,11 +506,12 @@ def main(
     classes_param_path = config["classes_param"]
     scaler_param_path = config["scaler_param"]
     preprocessed_data_path = config["preprocessed_data"]
+    preprocessed_data_cnn_path = config["preprocessed_data_cnn"]
     metadata_path = config["metadata"]
     label_encoder_path = config["label_encoder_path"]
     
     print("[1/7] Loading data ...")
-    df_features = get_data(traj_id_list)
+    df_features, labelisation_runs_by_traj = get_data(traj_id_list)
     total_rows_raw = int(len(df_features))
 
     print("\n[2/8] Stationary downsampling ...")
@@ -402,6 +527,7 @@ def main(
     print("\n[3/8] Geographic segmentation ...")
     df_features = assign_geographic_segments(
         df_features,
+        grid_size_km=segment_length_m / 1000.0,
     )
 
     safe_feature_names, dropped_coords = _sanitize_feature_names(feature_names)
@@ -461,7 +587,7 @@ def main(
 
     # Exclusion apres creation des fenetres: on filtre selon la classe centrale.
     y_label_norm = np.array([str(v).strip().lower().replace("_", " ").replace("-", " ") for v in y_label])
-    center_excluded = np.isin(y_label_norm, ["mixed", "signal denied","gare"])
+    center_excluded = np.isin(y_label_norm, ["mixed", "signal denied"])
     # On transforme tous les bridges en build
     y_label[center_excluded & (y_label_norm == "gare")] = "build"
     center_keep = ~center_excluded
@@ -505,7 +631,7 @@ def main(
     x_tensor_train = x_tensor[train_idx]
     x_tensor_test = x_tensor[test_idx]
 
-    val_ratio_in_train = R_VAL / max(1e-6, (1.0 - test_split_ratio))
+    val_ratio_in_train = val_split_ratio / max(1e-6, (1.0 - test_split_ratio))
     train_train_local_idx, train_val_local_idx = _pick_best_stratified_group_split(
         y=y_train,
         groups=id_train,
@@ -552,6 +678,22 @@ def main(
         list_classes_weights=list_classes_weights,
     )
 
+    # Dedicated export for sequence models (GRU / 1D CNN).
+    np.savez_compressed(
+        preprocessed_data_cnn_path,
+        X_tensor_train=x_tensor_train,
+        X_tensor_test=x_tensor_test,
+        y_train=y_train,
+        y_test=y_test,
+        id_train=id_train,
+        id_test=id_test,
+        t_train=t_train,
+        t_test=t_test,
+        train_train_idx=train_train_local_idx,
+        train_val_idx=train_val_local_idx,
+        list_classes_weights=list_classes_weights,
+    )
+
     print("\n[8/8] Saving metadata JSON ...")
     class_global = _class_distribution(y, le)
     class_train = _class_distribution(y_train[train_train_local_idx], le)
@@ -573,18 +715,20 @@ def main(
         total_rows_after_filters=total_rows_after_filters,
         total_rows_after_stride=total_rows_after_stride,
         test_split_ratio=test_split_ratio,
-        val_split_ratio=R_VAL,
+        val_split_ratio=val_split_ratio,
         n_segments=len(np.unique(segment_id)),
         speed_threshold_mps=speed_threshold_mps,
         stationary_keep_seconds=stationary_keep_seconds,
         stationary_keep_rows=stationary_keep_rows,
         last_segment_min_length_m=last_segment_min_length_m,
+        labelisation_runs_by_traj=labelisation_runs_by_traj,
         artefacts={
             "output_dir": str(output_dir),
             "classes_param_npy": str(classes_param_path),
             "scaler_pkl": str(scaler_param_path),
             "label_encoder_pkl": str(label_encoder_path),
             "preprocessed_data_npz": str(preprocessed_data_path),
+            "preprocessed_data_cnn_npz": str(preprocessed_data_cnn_path),
             "metadata_json": str(metadata_path),
         },
     )
@@ -594,6 +738,7 @@ def main(
     print(f"  scaler_param.pkl     -> {scaler_param_path}")
     print(f"  label_encoder.pkl    -> {label_encoder_path}")
     print(f"  preprocessed_data    -> {preprocessed_data_path}")
+    print(f"  preprocessed_data_cnn-> {preprocessed_data_cnn_path}")
     print(f"  metadata.json        -> {metadata_path}")
 
 
@@ -620,6 +765,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--window-size", type=int, default=PARAMS_ENTRAINEMENT.get("window_size", 5))
     parser.add_argument("--stride", type=int, default=PARAMS_ENTRAINEMENT.get("stride", 1))
     parser.add_argument("--test-split-ratio", type=float, default=PARAMS_ENTRAINEMENT.get("test_size", 0.2))
+    parser.add_argument("--val-split-ratio", type=float, default=PARAMS_ENTRAINEMENT.get("val_size", 0.1))
     parser.add_argument("--shuffle", action="store_true", default=PARAMS_ENTRAINEMENT.get("shuffle", False))
     parser.add_argument(
         "--segment-length-m",
@@ -663,6 +809,7 @@ if __name__ == "__main__":
         window_size=args.window_size,
         stride=max(1, int(args.stride)),
         test_split_ratio=float(args.test_split_ratio),
+        val_split_ratio=float(args.val_split_ratio),
         shuffle=bool(args.shuffle),
         segment_length_m=float(args.segment_length_m),
         speed_threshold_mps=float(args.speed_threshold_mps),

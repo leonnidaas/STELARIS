@@ -161,6 +161,7 @@ def render_page() -> None:
         default_steps = [
             "Preprocessing",
             "Entrainement GRU",
+            "Entrainement 1D CNN",
             "Entrainement XGBoost",
             "Evaluation",
         ]
@@ -433,6 +434,24 @@ def render_page() -> None:
                 "Conseil: pour un premier run, garder 20 trials / 60 epochs / timeout 1800s."
             )
 
+        with st.expander("Parametres Entrainement 1D CNN", expanded=False):
+            cnn_epochs = st.number_input(
+                "Epochs CNN",
+                min_value=5,
+                max_value=500,
+                value=50,
+                step=5,
+                disabled=is_running,
+            )
+            cnn_batch_size = st.number_input(
+                "Batch size CNN",
+                min_value=4,
+                max_value=256,
+                value=128,
+                step=4,
+                disabled=is_running,
+            )
+
     window_size = st.number_input(
         "Window size (preprocessing)",
         min_value=3,
@@ -441,6 +460,41 @@ def render_page() -> None:
         step=2,
         disabled=is_running,
     )
+
+    col_pre_a, col_pre_b, col_pre_c = st.columns(3)
+    with col_pre_a:
+        test_split_ratio = st.slider(
+            "Test split ratio",
+            min_value=0.05,
+            max_value=0.50,
+            value=float(PARAMS_ENTRAINEMENT.get("test_size", 0.2)),
+            step=0.01,
+            disabled=is_running,
+            help="Part du dataset reservee au test.",
+        )
+    with col_pre_b:
+        val_split_ratio = st.slider(
+            "Val split ratio",
+            min_value=0.05,
+            max_value=0.50,
+            value=float(PARAMS_ENTRAINEMENT.get("val_size", 0.1)),
+            step=0.01,
+            disabled=is_running,
+            help="Part du dataset reservee a la validation.",
+        )
+    with col_pre_c:
+        segment_length_m = st.number_input(
+            "Segment length (m)",
+            min_value=100.0,
+            max_value=20000.0,
+            value=float(PARAMS_ENTRAINEMENT.get("segment_length_m", 2000.0)),
+            step=100.0,
+            disabled=is_running,
+            help="Taille des segments geographiques utilises pour isoler les splits.",
+        )
+
+    if test_split_ratio + val_split_ratio >= 0.95:
+        st.warning("La somme test + val est tres elevee; le train risque d'etre trop petit.")
 
     max_live_lines = st.slider(
         "Lignes de logs visibles",
@@ -492,6 +546,12 @@ def render_page() -> None:
                     dataset_name,
                     "--window-size",
                     str(int(window_size)),
+                    "--test-split-ratio",
+                    str(float(test_split_ratio)),
+                    "--val-split-ratio",
+                    str(float(val_split_ratio)),
+                    "--segment-length-m",
+                    str(float(segment_length_m)),
                     "--features",
                     *selected_features,
                     "--trajets",
@@ -523,6 +583,14 @@ def render_page() -> None:
                     "--mixed-precision" if optuna_mixed_precision else "--no-mixed-precision",
                 ],
                 "Entrainement GRU": ["--dataset-name", dataset_name],
+                "Entrainement 1D CNN": [
+                    "--dataset-name",
+                    dataset_name,
+                    "--epochs",
+                    str(int(cnn_epochs)),
+                    "--batch-size",
+                    str(int(cnn_batch_size)),
+                ],
                 "Entrainement XGBoost": ["--dataset-name", dataset_name],
                 "Evaluation": ["--dataset-name", dataset_name],
             }

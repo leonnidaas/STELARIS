@@ -338,6 +338,8 @@ def create_feature_dataset(
 		center=True,
 	).mean().values
 	df["CN0_q_selected_quartile"] = cn0_quartile
+	# Approximation 5 secondes a 1 Hz: variabilite CN0 locale utile pour detecter des scintillations.
+	df["CN0_var_5s"] = df["CN0 mean"].rolling(window=5, min_periods=2).var().values
 	df["CMC_l1"] = d_cmc_l1
 	df["CMC_e1"] = d_cmc_e1
 	df["CMC_l2"] = d_cmc_l2
@@ -363,13 +365,12 @@ def create_feature_dataset(
 		"CN0_q_mean_smoothed",
 		"CN0_q_std_smoothed",
 		"CN0_q_selected_quartile",
+		"CN0_var_5s",
 		"pdop",
 		"CMC_l1",
 		"CMC_e1",
 		"CMC_l2",
 		"CMC_e5",
-		
-
 	]
 	existing_cols = [col for col in keep_columns if col in merged.columns]
 	return merged[existing_cols]
