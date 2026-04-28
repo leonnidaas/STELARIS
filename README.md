@@ -55,3 +55,7 @@ Chaque entraînement génère un dossier unique dans `MODELS/` contenant :
 * Le fichier de poids (`.keras` pour GRU ou `.json` pour XGBoost).
 * Le `scaler.pkl` et le `label_encoder.pkl` utilisés lors de l'entraînement.
 * Un `metadata.json` garantissant la traçabilité (features utilisées, ID du dataset source).
+<<<<<<< HEAD
+=======
+
+>>>>>>> 7739f6a (maj inference)
